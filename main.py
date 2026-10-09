@@ -218,7 +218,11 @@ class AIAskPlugin(Plugin):
         self._stop_event.set()
         task = self._stream_task
         if task is not None and not task.done():
-            task.cancel()
+            # _update_results can run inside the stream task itself. Do not
+            # self-cancel there; the stop event makes the next loop iteration
+            # exit cleanly. External /stop, /clear, and a new query cancel now.
+            if task is not asyncio.current_task():
+                task.cancel()
             return True
         return False
 
@@ -231,7 +235,7 @@ class AIAskPlugin(Plugin):
         async def run():
             task = asyncio.current_task()
             try:
-                answer = await self.stream_answer(query, prompt)
+                answer = await self.stream_answer(query, prompt, generation)
                 # Do not let a cancelled older task or /clear restore stale text.
                 if self._stream_task is task and self._stream_generation == generation:
                     self._last_answer = answer
@@ -242,16 +246,29 @@ class AIAskPlugin(Plugin):
 
         self._stream_task = asyncio.create_task(run(), name="aiask-stream")
 
-    async def _update_results(self, query: Query, results: list[Result]) -> None:
-        """Best-effort result refresh. It is harmless if the user moved on."""
+    def _is_current_generation(self, generation: int) -> bool:
+        return self._stream_generation == generation and not self._stop_event.is_set()
+
+    async def _update_results(
+        self, query: Query, results: list[Result], generation: int
+    ) -> bool:
+        """Refresh results only while this is still the active generation.
+
+        A failed UpdateResults means the user has likely edited or dismissed the
+        original `ai ...` query. Stop the now-invisible stream rather than
+        consuming tokens without a usable UI update.
+        """
+        if not self._is_current_generation(generation):
+            return False
         try:
             await query.update_results(results)
         except Exception:
-            # The current Flow query can change while an answer is streaming.
-            # Do not surface a transport detail or restart a stale generation.
-            pass
+            if self._is_current_generation(generation):
+                self.stop_stream()
+            return False
+        return self._is_current_generation(generation)
 
-    async def stream_answer(self, query: Query, prompt: str) -> str:
+    async def stream_answer(self, query: Query, prompt: str, generation: int) -> str:
         """Stream one completion and refresh the existing result in place.
 
         UpdateResults preserves the original `ai ...` query text, avoiding the
@@ -293,13 +310,16 @@ class AIAskPlugin(Plugin):
                     text += content
                     chunks_since_update += 1
                     if chunks_since_update >= 6:
-                        await self._update_results(
+                        updated = await self._update_results(
                             query,
                             [AIResult("Generating…", text, copy_text=text, icon=GENERATING_ICON)],
+                            generation,
                         )
+                        if not updated:
+                            return text
                         chunks_since_update = 0
 
-                if text:
+                if text and self._is_current_generation(generation):
                     await self._update_results(
                         query,
                         [
@@ -310,6 +330,7 @@ class AIAskPlugin(Plugin):
                                 icon=ANSWER_ICON,
                             )
                         ],
+                        generation,
                     )
                 return text
         except asyncio.CancelledError:
@@ -317,7 +338,7 @@ class AIAskPlugin(Plugin):
             # partial text only if it is still the active task (handled above).
             return text
         except Exception as error:
-            if not self._stop_event.is_set():
+            if self._is_current_generation(generation):
                 results: list[Result] = []
                 if text:
                     results.append(
@@ -329,7 +350,7 @@ class AIAskPlugin(Plugin):
                         )
                     )
                 results.append(Result("AI Ask error", _friendly_error(error), icon=ERROR_ICON))
-                await self._update_results(query, results)
+                await self._update_results(query, results, generation)
             return text
 
     async def handle_command(self, cmd: str) -> Result | None:
