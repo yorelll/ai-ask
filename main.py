@@ -208,14 +208,13 @@ class AIAskPlugin(Plugin):
         self._last_answer = ""
 
     def clear_last_answer(self) -> None:
-        # Invalidate the running task before cancellation, so its finally block
-        # cannot restore a partial answer after this explicit clear command.
-        self._stream_generation += 1
         self.stop_stream()
         self._last_answer = ""
 
     def stop_stream(self) -> bool:
         """Cancel an active stream, including a pending HTTP request."""
+        # Invalidate first so a cancelled task cannot preserve stale partial text.
+        self._stream_generation += 1
         self._stop_event.set()
         task = self._stream_task
         if task is not None and not task.done():
@@ -227,7 +226,6 @@ class AIAskPlugin(Plugin):
         """Cancel any previous stream, then begin exactly one new stream."""
         self.stop_stream()
         self._stop_event.clear()
-        self._stream_generation += 1
         generation = self._stream_generation
 
         async def run():
