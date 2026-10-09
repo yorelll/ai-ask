@@ -1,0 +1,12 @@
+{
+    "ID": "e24da8b6-c650-402e-9271-af2bc08db430",
+    "ActionKeyword": "ai",
+    "Name": "AI Ask",
+    "Description": "Chat with an OpenAI-compatible LLM through Flow Launcher (streaming)",
+    "Author": "yorelll",
+    "Version": "0.0.1",
+    "Language": "python_v2",
+    "Website": "https://github.com/yorelll/ai-ask",
+    "IcoPath": "Images\\plugin.png",
+    "ExecuteFileName": "main.py"
+}

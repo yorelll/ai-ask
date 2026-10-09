@@ -1,0 +1,43 @@
+body:
+  - type: input
+    attributes:
+      name: base_url
+      label: Base URL
+      description: "The OpenAI-compatible API endpoint, e.g. https://devops.realtek.com/realgpt-api/openai-compatible/v1"
+      defaultValue: ""
+  - type: passwordBox
+    attributes:
+      name: api_key
+      label: API Key
+      description: "Your API key for the endpoint above."
+      defaultValue: ""
+  - type: input
+    attributes:
+      name: model
+      label: Model
+      description: "The model name to use, e.g. fast, gpt-4o."
+      defaultValue: "fast"
+  - type: input
+    attributes:
+      name: max_tokens
+      label: Max Token
+      description: "Maximum number of tokens in the model response. Default 1000."
+      defaultValue: "1000"
+  - type: input
+    attributes:
+      name: timeout
+      label: Timeout (seconds)
+      description: "Per-request timeout in seconds. Default 60."
+      defaultValue: "60"
+  - type: input
+    attributes:
+      name: system_prompt
+      label: System Prompt
+      description: "Optional. System prompt sent before the user message."
+      defaultValue: "You are a helpful assistant."
+  - type: textarea
+    attributes:
+      name: skills
+      label: Skills (one per line)
+      description: "One skill per line. Each skill is sent as a header (X-Skill-1, X-Skill-2, ...) and appended at the end of your prompt."
+      defaultValue: ""

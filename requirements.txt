@@ -1,0 +1,4 @@
+# Python_v2 JSON-RPC client for Flow Launcher (pure Python)
+flogin==1.1.0
+# OpenAI-compatible asynchronous streaming client
+openai==3.26.1
