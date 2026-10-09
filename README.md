@@ -1,99 +1,195 @@
 # AI Ask — Flow Launcher 插件
 
-通过 Flow Launcher 对话框与任意 **OpenAI 兼容**大模型（如 Realtek realgpt、OpenAI、DeepSeek、通义等）进行**流式**对话。
+在 Flow Launcher 中使用任意 **OpenAI-compatible** API 进行流式 AI 对话，并提供可同时通过命令与本地 UI 管理的 Skill 系统。
 
-采用 **Python_v2** 协议（长驻进程 + 流式 JSON-RPC），回答会**实时逐字刷新**到 Flow 的结果列表中。
+## 解决当前 v0.0.1 的加载问题
+
+此前 `v0.0.1` 把由 CPython 3.11 构建的 `openai` / `pydantic_core` 二进制依赖打进了 `lib/`。如果 Flow 配置为 Python 3.12，例如：
+
+```text
+C:\Users\lawrence_lv\AppData\Local\Programs\Python\Python312\pythonw.exe
+```
+
+则 `cp311-win_amd64.pyd` 无法加载，Python_v2 子进程会退出，Flow 会显示：
+
+```text
+The JSON-RPC connection with the remote party was lost before the request could complete.
+```
+
+`v0.0.2` 起改用**仅 Python 标准库**实现 HTTP/SSE 流式请求；不再依赖 CPython ABI 绑定的 `openai`、`pydantic_core` 或 `jiter`。它支持 **64-bit CPython 3.11+**，包括 Flow 内置 Python 3.11.4 与用户的 Python 3.12。
 
 ## 功能
 
-- 🔎 输入 `ai <你的问题>` 发起对话
-- ⚡ **流式输出**：回答逐字实时刷新到结果列表（基于 Python_v2 的 `UpdateResults` 推送，不会破坏输入框中的 `ai` 关键字）
-- 🧠 **Skills**：配置多个技能，请求时：
-  - ASCII skill 作为请求头注入：`X-Skill-1`, `X-Skill-2`, …（自动剥离控制字符，保持原始序号）
-  - 所有 skill（包括中文）均追加到提示词**尾部**：`[Skills] 1. … 2. …`
-- ⚙️ 可配置：`base_url`、`api_key`、`model`、`max_tokens`（默认 1000）、`timeout`（默认 60s）、`system_prompt`、`skills`
-- 📋 `/last` 显示最近回答（`Ctrl+C` 复制）、`/clear` 清空、`/stop` 停止生成
-- 🎨 六个状态图标：默认、生成中、回答就绪、停止、清空与错误
-- 📦 依赖全部打进 `lib/`，用户**无需手动安装任何包**
+- `ai <问题>`：流式回答，原地更新 Flow 结果列表；保留输入框的 `ai` 关键字。
+- API 配置：Base URL、API Key、Model、Max Token、Timeout。
+- 全局 Skill：启用后自动合并为每个请求的 system prompt，可同时启用多条。
+- 动态 Skill：`/add` 仅为当前请求加载，不改变全局配置。
+- Skill 双管理入口：
+  - `ai /skills`：Flow 命令和结果列表管理；
+  - `ai /skills-ui`：浏览器中的表格、添加、编辑、删除与启用开关。
+- 六个状态图标：默认、生成中、回答就绪、停止、清空、错误。
+- 支持 `ai /add translate 问题` 的空格/英文冒号/中文冒号混用分隔形式。
 
 ## 环境要求
 
-- **64-bit CPython 3.11.x**。Flow Launcher 的 Python_v2 内置嵌入式 Python 3.11.4 是推荐且经过打包验证的运行时；如改用自定义解释器，也必须使用 64-bit Python 3.11.x。
-- 支持 **Python_v2** 的较新 Flow Launcher 版本，以及 Windows x64。
-- 无需手动安装依赖 —— release 压缩包内的 `lib/` 已包含全部依赖。
+- Windows x64；支持 Python_v2 的 Flow Launcher。
+- **64-bit CPython 3.11+**：Flow 内置 3.11.4 或自定义 Python 3.11/3.12 都可用。
+- Release 包中仅需打包 `flogin` 及其纯 Python 依赖；用户不需要 `pip install`。
 
-## 安装到 Flow Launcher
+## 安装
 
-1. 从 [Releases](https://github.com/yorelll/ai-ask/releases) 下载 `AIAsk-<version>.zip`
+1. 从 [Releases](https://github.com/yorelll/ai-ask/releases) 下载最新 `AIAsk-<version>.zip`。
 2. 解压到：
-   ```
-   %APPDATA%\FlowLauncher\Plugins\AIAsk\
-   ```
-3. 在 Flow 中输入 `pm`（插件管理）打开 AI Ask 的**设置**，填写：
-   - **Base URL**：如 `https://devops.realtek.com/realgpt-api/openai-compatible/v1`
-   - **API Key**：你的密钥
-   - **Model**：如 `fast`
-   - **Max Token**：默认 `1000`
-   - **Timeout**：默认 `60`（秒）
-   - **System Prompt**：可选
-   - **Skills**：每行一个（可选）
-4. 在 Flow 输入 `ai 你好` 开始对话
 
-> 设置模板来自 `SettingsTemplate.yaml`。Flow 会把填写的值保存到
-> `%AppData%\FlowLauncher\Settings\Plugins\AI Ask\Settings.json`，并在每次 `query` 时注入给插件。
-> `API Key` 在设置窗口中会被掩码，但 Flow Launcher 的插件设置文件本身以明文保存；请使用专用于此插件、权限最小化的 API key。
+   ```text
+   D:\Program Files\FlowLauncher\app-<version>\UserData\Plugins\AIAsk-<version>\
+   ```
 
-## 交互方式
+   或你的 Flow UserData Plugins 目录。**不要保留 zip 的额外嵌套目录。**
+3. 在 Flow 插件管理中启用 AI Ask。
+4. 打开 AI Ask 设置，填写 Base URL、API Key、Model、Max Token、Timeout。
+5. 输入 `ai 你好` 开始对话。
+
+> API Key 在设置界面中被掩码，但 Flow 的插件设置文件仍以明文保存。请使用专用、低权限 API key。
+
+## Skill 数据与同步
+
+Skills 存放在 Flow 的插件设置目录：
+
+```text
+<UserData>\Settings\Plugins\AI Ask\skills.json
+```
+
+这份 JSON 是 **`/skills` 与 `/skills-ui` 唯一共享数据源**：无论从命令还是浏览器 UI 添加、编辑、删除、启用，另一入口下一次读取时都会立即显示相同结果。
+
+每条 Skill 数据：
+
+```json
+{
+  "alias": "translate",
+  "path": "C:\\skills\\translate.md",
+  "global": true
+}
+```
+
+| 字段 | 含义 |
+|---|---|
+| `alias` | `/add` 使用的别名，如 `translate` |
+| `path` | UTF-8 Skill 文件路径；相对路径以插件根目录为基准 |
+| `global` | `true` 时每次 AI 对话自动加入 system prompt |
+
+Skill 文件内容本身不会被 `/skills edit` 修改。**edit 只修改别名、路径及全局启用状态**。
+
+## 命令式 Skill 管理：`ai /skills`
+
+```text
+ai /skills
+ai /skills add translate skill_files/translate.md global
+ai /skills add review C:\skills\review.md
+ai /skills edit translate translator C:\skills\translator.md global
+ai /skills toggle review
+ai /skills delete review
+```
+
+- `add <alias> <path> [global]`：添加；最后参数是 `global` / `on` / `true` / `1` 时全局启用。路径含空格时使用英文双引号，例如 `ai /skills add translate "C:\\My Skills\\translate.md" global`。
+- `edit <旧别名> <新别名> <路径> [global]`：仅编辑 skill 元信息；路径含空格时同样使用双引号。
+- `toggle <alias>`：切换全局加载。
+- `delete <alias>`：删除记录，不删除原 skill 文件。
+- 列表中的每项提供右键 / Shift+Enter 菜单，用于切换全局加载或删除。
+- 每次新增和编辑都会校验路径是否存在、是否是可读 UTF-8 文本；路径失效会显示错误。
+
+## 图形化 Skill 管理：`ai /skills-ui`
+
+输入：
+
+```text
+ai /skills-ui
+```
+
+然后按 Enter 打开仅本机可访问的 `127.0.0.1` 页面，页面有：
+
+- 别名、路径、全局加载、路径有效状态；
+- 添加、编辑、删除；
+- 全局加载 checkbox；
+- 编辑弹窗；
+- 保存时路径和 alias 校验。
+
+该 UI 与 `/skills` 同步使用同一 `skills.json`，无需导入或导出。
+
+## 全局与动态 Skill
+
+### 全局 Skill
+
+启用一条或多条 global skill 后：
+
+```text
+ai 解释这个命令
+```
+
+所有启用项的文件内容按配置顺序合并为 system prompt。
+
+### 动态 Skill：`/add`
+
+```text
+ai /add
+```
+
+显示可选 skill；随后使用别名临时加入本次请求：
+
+```text
+ai /add translate 这段英文是什么意思
+ai /add translate:review:这段代码有什么问题
+ai /add translate：review：这段代码有什么问题
+```
+
+空格形式只把 `/add` 后的第一个别名作为动态 skill，后续文字完整保留为问题；如果需要多条动态 skill，请使用 `:` 或 `：` 分隔多个别名。动态 skill 不会写入全局状态，也不会影响下一次对话。
+
+### 分隔符支持
+
+进入插件后，命令 parser 支持：空格、英文冒号 `:`、中文冒号 `：`，以及它们前后的任意空格和混用：
+
+```text
+ai /add translate xxx 命令是什么意思
+ai : /add : translate : xxx 命令是什么意思
+ai ： /add：translate : xxx 命令是什么意思
+ai /add translate：review：xxx 命令是什么意思
+```
+
+> 插件同时注册受控 wildcard 路由，仅接收以 `ai:` 或 `ai：` 开头的查询并将其标准化为同一命令。因此 `ai:/add:translate:问题`、`ai：/add：translate：问题` 与空格形式都支持；其他全局查询会立即返回空结果，不影响其它插件。
+
+## 示例 Skill 文件
+
+Release 内含可直接尝试的文件：
+
+```text
+skill_files/translate.md
+skill_files/review.md
+```
+
+例如：
+
+```text
+ai /skills add translate skill_files/translate.md global
+ai /add review 请检查这段代码
+```
+
+## 交互命令
 
 | 输入 | 行为 |
 |---|---|
-| `ai <问题>` | 开始流式对话，回答实时更新在结果列表中 |
-| `ai`（空） | 显示当前配置提示 |
-| `ai /stop` | 停止正在进行的生成 |
-| `ai /clear` | 清空当前会话的最近回答 |
-| `ai /last` | 显示最近回答；选择结果后按 `Ctrl+C` 复制 |
-| 右键 / Shift+Enter | 菜单：清空当前会话 |
+| `ai <问题>` | 全局 Skill + 问题，开始流式回答 |
+| `ai /stop` | 取消当前生成 |
+| `ai /clear` | 清空当前 session 最近回答并停止生成 |
+| `ai /last` | 显示最近回答；Enter 或 `Ctrl+C` 复制 |
+| `ai /skills` | 列出与命令管理 skills |
+| `ai /skills-ui` | 打开图形化 Skill 管理页 |
+| `ai /add` | 显示可临时加载的 skills |
+| `ai /add <alias...> <问题>` | 为本次对话加载动态 skills |
 
-## 项目结构
+## 技术设计
 
-```
-ai-ask/
-├── plugin.json              # 插件清单（Language: python_v2）
-├── SettingsTemplate.yaml    # Flow 设置面板模板
-├── main.py                  # 插件逻辑（flogin + AsyncOpenAI 流式）
-├── requirements.txt         # 依赖：flogin, openai
-├── Images/                  # 状态图标：plugin / generating / answer / stop / clear / error
-├── test_v2_protocol.py      # V2 协议端到端测试（可打真实 API）
-├── .github/workflows/Publish Release.yml  # 构建 lib + 发布 release
-└── (构建产物) lib/           # 由 GitHub Action 生成，随 release 打包
-```
-
-## 开发 / 测试
-
-```bash
-# 本地开发环境
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-
-# V2 协议端到端测试（真实 API）
-python test_v2_protocol.py
-```
-
-`test_v2_protocol.py` 会扮演 Flow Launcher 的 V2 客户端：启动 main.py，发送
-`initialize` / `query`，并验证插件是否能通过 `UpdateResults` **流式**刷新结果。测试使用真实 API 时须先设置 `AI_API_KEY` 环境变量；未设置时会安全跳过。
-
-## 技术说明
-
-- **协议**：Python_v2（`Language: "python_v2"`）—— 长驻进程，stdin/stdout 上的
-  NewLineDelimited JSON-RPC（StreamJsonRpc 兼容）。基于 [flogin](https://github.com/cibere/flogin)
-  客户端库，官方认可插件（如 rtfm）同样采用。
-- **流式**：`AsyncOpenAI.chat.completions.create(stream=True)` + `async for`，每 6 个
-  chunk 通过 Python_v2 的 `UpdateResults` 原地更新结果；输入框和 `ai` 关键字保持不变，`/stop` 会取消当前协程。
-- **设置**：由 `SettingsTemplate.yaml` 生成设置面板，值存入 `%AppData%` 并在每次
-  `query` 的第二参数注入，插件无需直接读写文件。
-- **打包**：GitHub Action 用 `pip install -r requirements.txt -t lib` 生成 Windows x64 / CPython 3.11 对应的 `lib/` 随 release 分发；`main.py` 在 import 时把 `lib` 加入 `sys.path`。
-
-## 发布
-
-推送与 `plugin.json` 版本匹配的 tag（例如 `Version: "0.0.1"` 对应 tag `v0.0.1`）即可自动构建并发布 release；tag 触发时 Action 会验证版本一致。也可手动触发 `Publish Release` Action，Action 会使用 `plugin.json` 的版本号创建或更新对应 tag 的 release。
+- `Language: python_v2`：长驻插件进程，NewLineDelimited JSON-RPC。
+- HTTP：标准库 `urllib.request` + SSE parser，后台线程生产 chunk、async queue 消费；无 CPython ABI 绑定第三方网络 SDK。
+- 流式：通过 `UpdateResults` 原地刷新结果，不触发输入框重查询。
+- Skill UI：标准库 `ThreadingHTTPServer` 仅监听 `127.0.0.1`，浏览器管理页面无外网暴露。
+- 打包：GitHub Action 将纯 Python 依赖装入 `lib/`，Release 可直接复制进 Plugins 目录。

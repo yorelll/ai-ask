@@ -2,32 +2,34 @@
 """
 AI Ask - Flow Launcher plugin (Python_v2).
 
-Chat with an OpenAI-compatible LLM directly in Flow Launcher. This plugin uses
-the long-lived Python_v2 protocol and updates its result list as tokens arrive.
-
-Release artifact requirement: 64-bit CPython 3.11.x. Flow Launcher's embedded
-CPython 3.11.4 is the supported runtime. Dependencies are bundled into `lib/`
-by the GitHub Action, so end users do not install packages manually.
+OpenAI-compatible streaming chat for Flow Launcher. It uses only the Python
+standard library for HTTP/SSE, so one release works with both Flow's embedded
+CPython 3.11 and a user's CPython 3.12+ interpreter.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
+import shlex
+import ssl
 import sys
+import threading
+import urllib.error
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Iterator
 
-# Flow's Python_v2 runner injects these directories itself, but maintaining the
-# paths here also supports direct local execution.
+# Flow's Python_v2 runner injects these dirs itself; keep them for direct runs.
 PLUGIN_DIR = Path(__file__).resolve().parent
 sys.path = [str(PLUGIN_DIR / p) for p in (".", "lib", "plugin")] + sys.path
 
 from flogin import ErrorResponse, ExecuteResponse, Plugin, Query, Result, SearchHandler  # noqa: E402
-from openai import AsyncOpenAI  # noqa: E402
 
-# Flogin logs raw JSON-RPC input at INFO/DEBUG; incoming query settings contain
-# api_key, so suppress those logs even if a host configures the root logger.
+# Flogin logs raw JSON-RPC input at INFO/DEBUG; query settings contain api_key.
 logging.getLogger("flogin").setLevel(logging.WARNING)
 log = logging.getLogger("aiask")
 log.addHandler(logging.NullHandler())
@@ -40,16 +42,19 @@ STOP_ICON = "Images\\stop.png"
 CLEAR_ICON = "Images\\clear.png"
 ERROR_ICON = "Images\\error.png"
 
+DEFAULT_SKILLS = {"version": 1, "skills": []}
+SKILL_ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+COMMAND_SPLIT_RE = re.compile(r"(?:\s+|\s*[:：]\s*)+")
+
 
 # ---------------------------------------------------------------------------
-# Settings and request helpers
+# Settings, paths, and skill store
 # ---------------------------------------------------------------------------
 
-def _as_int(value, default):
-    if value is None or value == "":
-        return default
+def _as_int(value, default: int) -> int:
     try:
-        return int(value)
+        parsed = int(value)
+        return parsed if parsed > 0 else default
     except (TypeError, ValueError):
         return default
 
@@ -63,63 +68,278 @@ def _is_configured(plugin) -> bool:
     return bool(_setting_text(plugin, "base_url") and _setting_text(plugin, "api_key"))
 
 
-def get_skills(plugin) -> list:
-    """Return configured skills as a list (one per nonblank line)."""
-    raw = getattr(plugin.settings, "skills", "") or ""
-    if isinstance(raw, str):
-        return [skill.strip() for skill in raw.splitlines() if skill.strip()]
-    return [str(skill).strip() for skill in raw if str(skill).strip()]
+def _settings_dir(plugin) -> Path:
+    """Use Flow's real plugin settings directory when available."""
+    try:
+        configured = getattr(plugin.metadata, "_data", {}).get("pluginSettingsDirectoryPath")
+        if configured:
+            return Path(configured)
+    except Exception:
+        pass
+    # Flow's normal layout; fallback supports direct local testing.
+    return PLUGIN_DIR / "data"
 
 
-def skill_headers(skills) -> dict:
-    """Map ASCII-safe skills to X-Skill-N HTTP headers.
-
-    httpx permits only ASCII HTTP header values. A non-ASCII skill remains fully
-    effective in the prompt suffix, but is omitted from headers rather than
-    failing the complete request. Numbering follows the original skill index.
-    """
-    headers = {}
-    for i, skill in enumerate(skills, start=1):
-        clean = re.sub(r"[\x00-\x1f\x7f]+", " ", skill).strip()
-        if clean and clean.isascii():
-            headers[f"X-Skill-{i}"] = clean
-    return headers
+def _skills_file(plugin) -> Path:
+    return _settings_dir(plugin) / "skills.json"
 
 
-def skill_suffix(skills) -> str:
-    if not skills:
-        return ""
-    numbered = "\n".join(f"{i + 1}. {skill}" for i, skill in enumerate(skills))
-    return f"\n\n[Skills]\n{numbered}"
+def _normalize_skill_path(value: str) -> Path:
+    path = Path(value.strip().strip('"'))
+    if not path.is_absolute():
+        path = PLUGIN_DIR / path
+    return path.resolve()
 
 
-def make_client(plugin) -> AsyncOpenAI:
-    """Build an async OpenAI client from Flow-injected settings."""
-    base_url = _setting_text(plugin, "base_url")
-    api_key = _setting_text(plugin, "api_key")
-    if not base_url or not api_key:
-        raise ValueError("not configured")
-    return AsyncOpenAI(
-        base_url=base_url,
-        api_key=api_key,
-        timeout=_as_int(getattr(plugin.settings, "timeout", 60), 60),
+def _validate_skill(alias: str, path_text: str) -> tuple[str, Path]:
+    alias = alias.strip().lower()
+    if not SKILL_ALIAS_RE.fullmatch(alias):
+        raise ValueError("Alias must use letters, digits, _ or -, and start with a letter or digit.")
+    path = _normalize_skill_path(path_text)
+    if not path.is_file():
+        raise ValueError(f"Skill path does not exist: {path}")
+    try:
+        path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError(f"Skill file must be UTF-8 text: {path}") from error
+    except OSError as error:
+        raise ValueError(f"Skill file cannot be read: {path}") from error
+    return alias, path
+
+
+def _load_skills(plugin) -> list[dict]:
+    path = _skills_file(plugin)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        skills = data.get("skills", [])
+        if not isinstance(skills, list):
+            return []
+        return [skill for skill in skills if isinstance(skill, dict)]
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def _save_skills(plugin, skills: list[dict]) -> None:
+    path = _skills_file(plugin)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(".tmp")
+    temp.write_text(
+        json.dumps({"version": 1, "skills": skills}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
     )
+    temp.replace(path)
+
+
+def _skill_status(skill: dict) -> tuple[bool, str]:
+    try:
+        path = _normalize_skill_path(str(skill.get("path", "")))
+        if not path.is_file():
+            return False, "missing path"
+        path.read_text(encoding="utf-8")
+        return True, "valid"
+    except (OSError, UnicodeDecodeError):
+        return False, "unreadable"
+
+
+def _read_skill(skill: dict) -> str:
+    path = _normalize_skill_path(str(skill.get("path", "")))
+    if not path.is_file():
+        raise ValueError(f"Skill path does not exist: {path}")
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except UnicodeDecodeError as error:
+        raise ValueError(f"Skill file is not UTF-8: {path}") from error
+    except OSError as error:
+        raise ValueError(f"Skill file cannot be read: {path}") from error
+
+
+def _active_global_skills(plugin) -> tuple[list[dict], list[str]]:
+    active, problems = [], []
+    for skill in _load_skills(plugin):
+        if not skill.get("global", False):
+            continue
+        valid, reason = _skill_status(skill)
+        alias = str(skill.get("alias", "?"))
+        if valid:
+            active.append(skill)
+        else:
+            problems.append(f"{alias}: {reason}")
+    return active, problems
+
+
+def _parse_ai_command(text: str) -> list[str]:
+    """Accept whitespace, ASCII :, Chinese ：, or any mixture as separators."""
+    normalized = text.strip()
+    if not normalized:
+        return []
+    return [part for part in COMMAND_SPLIT_RE.split(normalized) if part]
+
+
+# ---------------------------------------------------------------------------
+# OpenAI-compatible HTTP/SSE client (stdlib only; no Python-ABI dependency)
+# ---------------------------------------------------------------------------
+
+class ChatHTTPError(RuntimeError):
+    pass
+
+
+def _chat_completion_url(base_url: str) -> str:
+    return base_url.rstrip("/") + "/chat/completions"
+
+
+def _open_sse_stream(
+    base_url: str,
+    api_key: str,
+    model: str,
+    messages: list[dict],
+    max_tokens: int,
+    timeout: int,
+    headers: dict[str, str],
+) -> Iterator[str]:
+    payload = json.dumps(
+        {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": 0.7,
+            "stream": True,
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    request_headers = {
+        "Content-Type": "application/json; charset=utf-8",
+        "Accept": "text/event-stream",
+        "Authorization": f"Bearer {api_key}",
+        **headers,
+    }
+    request = urllib.request.Request(
+        _chat_completion_url(base_url), data=payload, headers=request_headers, method="POST"
+    )
+    try:
+        response = urllib.request.urlopen(
+            request, timeout=timeout, context=ssl.create_default_context()
+        )
+    except urllib.error.HTTPError as error:
+        raise ChatHTTPError(f"HTTP {error.code}") from error
+    except urllib.error.URLError as error:
+        raise ChatHTTPError("connection failed") from error
+    except TimeoutError as error:
+        raise ChatHTTPError("timeout") from error
+
+    with response:
+        for raw in response:
+            line = raw.decode("utf-8", errors="replace").strip()
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                event = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            for choice in event.get("choices") or []:
+                content = (choice.get("delta") or {}).get("content")
+                if isinstance(content, str) and content:
+                    yield content
 
 
 def _friendly_error(error: Exception) -> str:
-    """Return a safe message; never render raw URLs, server bodies, or secrets."""
-    name = type(error).__name__.lower()
+    """Never render raw URLs, server bodies, or API keys in Flow."""
+    message = str(error).lower()
     if isinstance(error, ValueError):
-        return "Configure Base URL and API Key in the plugin settings."
-    if "authentication" in name or "permission" in name:
+        return str(error)
+    if "401" in message or "403" in message or "auth" in message:
         return "Authentication failed. Check the API key in plugin settings."
-    if "ratelimit" in name:
+    if "429" in message or "rate" in message:
         return "Rate limit reached. Please try again later."
-    if "timeout" in name:
+    if "timeout" in message:
         return "The AI request timed out. Try again or increase Timeout."
-    if "connection" in name or "connect" in name:
+    if "connection" in message or "connect" in message:
         return "Could not connect to the AI endpoint. Check Base URL and network."
     return "The AI request failed. Check endpoint, model, and plugin settings."
+
+
+# ---------------------------------------------------------------------------
+# Local skill-management web UI
+# ---------------------------------------------------------------------------
+
+class _SkillUIHandler(BaseHTTPRequestHandler):
+    manager = None
+
+    def log_message(self, format, *args):
+        return
+
+    def _json(self, status: int, value: dict) -> None:
+        raw = json.dumps(value, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def _html(self, content: str) -> None:
+        raw = content.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def do_GET(self):
+        if self.path == "/api/skills":
+            self._json(200, {"skills": self.manager.skills_for_ui()})
+            return
+        self._html(_SKILLS_UI_HTML)
+
+    def do_POST(self):
+        if self.path != "/api/skills":
+            self._json(404, {"error": "not found"})
+            return
+        try:
+            size = int(self.headers.get("Content-Length", "0"))
+            data = json.loads(self.rfile.read(size).decode("utf-8"))
+            skill = self.manager.upsert_skill(
+                str(data.get("alias", "")),
+                str(data.get("path", "")),
+                bool(data.get("global", False)),
+                str(data.get("originalAlias", "")),
+            )
+            self._json(200, {"skill": skill})
+        except (ValueError, OSError) as error:
+            self._json(400, {"error": str(error)})
+
+    def do_DELETE(self):
+        if not self.path.startswith("/api/skills/"):
+            self._json(404, {"error": "not found"})
+            return
+        alias = urllib.parse.unquote(self.path.rsplit("/", 1)[-1])
+        if self.manager.delete_skill(alias):
+            self._json(200, {"ok": True})
+        else:
+            self._json(404, {"error": "skill not found"})
+
+
+_SKILLS_UI_HTML = """<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><title>AI Ask Skills</title>
+<style>
+body{font-family:"Microsoft YaHei UI",Segoe UI,sans-serif;margin:32px;background:#fafafa;color:#222}h1{margin:0 0 20px}
+table{width:100%;border-collapse:collapse;background:#fff}th,td{padding:13px 16px;text-align:left;border-bottom:1px solid #e5e5e5}th{color:#777;font-weight:500}button{padding:8px 18px;border:1px solid #ccc;border-radius:6px;background:#fff;font-size:15px;cursor:pointer}button.primary{background:#805100;color:#fff;border-color:#805100}button.danger{color:#b42318}.actions{display:flex;gap:8px}.status-ok{color:#067647}.status-bad{color:#b42318}
+#dialog{display:none;position:fixed;inset:0;background:#0004;align-items:center;justify-content:center}.panel{background:#fff;border-radius:12px;width:480px;padding:28px;box-shadow:0 12px 40px #0003}.panel label{display:block;margin:15px 0 6px}.panel input[type=text]{width:100%;box-sizing:border-box;padding:10px;border:1px solid #ccc;border-radius:6px;font-size:16px}.footer{display:flex;justify-content:flex-end;gap:10px;margin-top:24px}.error{color:#b42318;margin-top:10px}.toolbar{display:flex;justify-content:flex-end;margin-bottom:14px}
+</style><body><h1>AI Ask · Skill 管理</h1><div class="toolbar"><button class="primary" onclick="openAdd()">添加</button></div>
+<table><thead><tr><th>别名</th><th>路径</th><th>全局加载</th><th>状态</th><th>操作</th></tr></thead><tbody id="rows"></tbody></table>
+<div id="dialog"><div class="panel"><h2 id="dialogTitle">添加 Skill</h2><input id="original" type="hidden"><label>别名</label><input id="alias" type="text" placeholder="例如 translate"><label>Skill 文件路径</label><input id="path" type="text" placeholder="C:\\skills\\translate.md"><label><input id="global" type="checkbox"> 全局加载为 system prompt</label><div id="error" class="error"></div><div class="footer"><button onclick="closeDialog()">取消</button><button class="primary" onclick="save()">确认</button></div></div></div>
+<script>
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+async function load(){let d=await fetch('/api/skills').then(r=>r.json());rows.innerHTML=d.skills.map(s=>`<tr><td>${esc(s.alias)}</td><td>${esc(s.path)}</td><td><input type="checkbox" ${s.global?'checked':''} onchange="toggle('${esc(s.alias)}',this.checked)"></td><td class="${s.valid?'status-ok':'status-bad'}">${s.valid?'有效':'路径不可用'}</td><td><div class="actions"><button onclick='edit(${JSON.stringify(s)})'>编辑</button><button class="danger" onclick="removeSkill('${esc(s.alias)}')">删除</button></div></td></tr>`).join('')||'<tr><td colspan="5">暂无 skill；点击“添加”创建。</td></tr>'}
+function openAdd(){dialogTitle.textContent='添加 Skill';original.value='';alias.value='';path.value='';global.checked=false;error.textContent='';dialog.style.display='flex'}
+function edit(s){dialogTitle.textContent='编辑 Skill 信息';original.value=s.alias;alias.value=s.alias;path.value=s.path;global.checked=s.global;error.textContent='';dialog.style.display='flex'}
+function closeDialog(){dialog.style.display='none'}
+async function save(){let r=await fetch('/api/skills',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({originalAlias:original.value,alias:alias.value,path:path.value,global:global.checked})});let d=await r.json();if(!r.ok){error.textContent=d.error;return}closeDialog();load()}
+async function toggle(a,g){let s=(await fetch('/api/skills').then(r=>r.json())).skills.find(x=>x.alias===a);await fetch('/api/skills',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({originalAlias:a,alias:a,path:s.path,global:g})});load()}
+async function removeSkill(a){if(confirm('删除 skill '+a+'？')){await fetch('/api/skills/'+encodeURIComponent(a),{method:'DELETE'});load()}}
+load();
+</script></body></html>"""
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +347,6 @@ def _friendly_error(error: Exception) -> str:
 # ---------------------------------------------------------------------------
 
 async def _copy_to_clipboard(result: Result, text: str) -> bool:
-    """Call Flow's V2 CopyToClipboard RPC from a selectable plugin result."""
     if not text or result.plugin is None:
         return False
     try:
@@ -137,35 +356,19 @@ async def _copy_to_clipboard(result: Result, text: str) -> bool:
         return False
 
 
-class ClearHistoryResult(Result):
-    """Context-menu command that clears the current session's last answer."""
+class ActionResult(Result):
+    """Result with an async callback owned by the AI Ask plugin."""
+
+    def __init__(self, title: str, sub: str, icon: str, action):
+        super().__init__(title=title, sub=sub, icon=icon)
+        self._action = action
 
     async def callback(self) -> ExecuteResponse:
-        if self.plugin is not None:
-            self.plugin.clear_last_answer()
-        return ExecuteResponse(hide=False)
-
-
-class CopyAnswerResult(Result):
-    """A context-menu result that actually copies its answer on Enter."""
-
-    def __init__(self, text: str):
-        super().__init__(
-            title="Copy last answer",
-            sub="Copy the latest response to clipboard",
-            icon=ANSWER_ICON,
-            copy_text=text,
-        )
-        self._answer = text
-
-    async def callback(self) -> ExecuteResponse:
-        copied = await _copy_to_clipboard(self, self._answer)
-        return ExecuteResponse(hide=copied)
+        hide = await self._action()
+        return ExecuteResponse(hide=hide)
 
 
 class AIResult(Result):
-    """An answer result that copies its text to the clipboard on Enter."""
-
     def __init__(self, title, sub="", copy_text=None, icon=ICON):
         super().__init__(title=title, sub=sub, icon=icon, copy_text=copy_text)
         self._answer = copy_text or ""
@@ -174,60 +377,114 @@ class AIResult(Result):
         copied = await _copy_to_clipboard(self, self._answer)
         return ExecuteResponse(hide=copied)
 
-    async def context_menu(self):
-        results = [
-            ClearHistoryResult(
-                "Clear conversation",
-                sub="Stop generation and reset the session answer",
-                icon=CLEAR_ICON,
-            ),
-        ]
-        if self._answer:
-            results.insert(0, CopyAnswerResult(self._answer))
-        return results
-
 
 # ---------------------------------------------------------------------------
 # Plugin + search handler
 # ---------------------------------------------------------------------------
 
 class AIAskPlugin(Plugin):
-    """Long-lived Python_v2 plugin.
-
-    Flow injects the current settings dictionary as the second parameter of
-    every query RPC; flogin exposes it as `self.settings`.
-    """
+    """Long-lived Python_v2 plugin with dual command/UI skill management."""
 
     def __init__(self, **options) -> None:
-        # Leave settings updates enabled so changes in Flow's settings dialog
-        # apply on the next query without restarting Flow.
         super().__init__(**options)
         self._stop_event = asyncio.Event()
         self._stream_task: asyncio.Task | None = None
         self._stream_generation = 0
         self._last_answer = ""
+        # UI HTTP handlers run in another thread; command and UI updates must
+        # serialize their load-modify-save cycle against the shared skills.json.
+        self._skills_lock = threading.RLock()
+        self._ui_server: ThreadingHTTPServer | None = None
+        self._ui_thread: threading.Thread | None = None
+
+    # -- Skill persistence and management -----------------------------------
+
+    def skills_for_ui(self) -> list[dict]:
+        with self._skills_lock:
+            result = []
+            for skill in _load_skills(self):
+                valid, status = _skill_status(skill)
+                result.append(
+                    {
+                        "alias": str(skill.get("alias", "")),
+                        "path": str(skill.get("path", "")),
+                        "global": bool(skill.get("global", False)),
+                        "valid": valid,
+                        "status": status,
+                    }
+                )
+            return result
+
+    def upsert_skill(
+        self, alias: str, path_text: str, global_enabled: bool, original_alias: str = ""
+    ) -> dict:
+        alias, path = _validate_skill(alias, path_text)
+        with self._skills_lock:
+            skills = _load_skills(self)
+            original_alias = original_alias.strip().lower()
+            if any(s.get("alias") == alias and alias != original_alias for s in skills):
+                raise ValueError(f"Skill alias already exists: {alias}")
+            updated = {"alias": alias, "path": str(path), "global": global_enabled}
+            if original_alias:
+                for index, skill in enumerate(skills):
+                    if str(skill.get("alias", "")).lower() == original_alias:
+                        skills[index] = updated
+                        break
+                else:
+                    raise ValueError(f"Skill alias not found: {original_alias}")
+            else:
+                skills.append(updated)
+            _save_skills(self, skills)
+            return updated
+
+    def delete_skill(self, alias: str) -> bool:
+        alias = alias.strip().lower()
+        with self._skills_lock:
+            skills = _load_skills(self)
+            updated = [s for s in skills if str(s.get("alias", "")).lower() != alias]
+            if len(updated) == len(skills):
+                return False
+            _save_skills(self, updated)
+            return True
+
+    def toggle_global(self, alias: str) -> dict:
+        alias = alias.strip().lower()
+        with self._skills_lock:
+            skills = _load_skills(self)
+            for skill in skills:
+                if str(skill.get("alias", "")).lower() == alias:
+                    skill["global"] = not bool(skill.get("global", False))
+                    _save_skills(self, skills)
+                    return skill
+            raise ValueError(f"Skill alias not found: {alias}")
+
+    def start_skills_ui(self) -> str:
+        if self._ui_server is None:
+            handler = type("SkillUIHandler", (_SkillUIHandler,), {"manager": self})
+            self._ui_server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            self._ui_thread = threading.Thread(
+                target=self._ui_server.serve_forever, name="aiask-skills-ui", daemon=True
+            )
+            self._ui_thread.start()
+        return f"http://127.0.0.1:{self._ui_server.server_port}/"
+
+    # -- Streaming -----------------------------------------------------------
 
     def clear_last_answer(self) -> None:
         self.stop_stream()
         self._last_answer = ""
 
     def stop_stream(self) -> bool:
-        """Cancel an active stream, including a pending HTTP request."""
-        # Invalidate first so a cancelled task cannot preserve stale partial text.
         self._stream_generation += 1
         self._stop_event.set()
         task = self._stream_task
         if task is not None and not task.done():
-            # _update_results can run inside the stream task itself. Do not
-            # self-cancel there; the stop event makes the next loop iteration
-            # exit cleanly. External /stop, /clear, and a new query cancel now.
             if task is not asyncio.current_task():
                 task.cancel()
             return True
         return False
 
-    def start_stream(self, query: Query, prompt: str) -> None:
-        """Cancel any previous stream, then begin exactly one new stream."""
+    def start_stream(self, query: Query, prompt: str, selected_skills: list[dict]) -> None:
         self.stop_stream()
         self._stop_event.clear()
         generation = self._stream_generation
@@ -235,8 +492,7 @@ class AIAskPlugin(Plugin):
         async def run():
             task = asyncio.current_task()
             try:
-                answer = await self.stream_answer(query, prompt, generation)
-                # Do not let a cancelled older task or /clear restore stale text.
+                answer = await self.stream_answer(query, prompt, selected_skills, generation)
                 if self._stream_task is task and self._stream_generation == generation:
                     self._last_answer = answer
             finally:
@@ -249,15 +505,7 @@ class AIAskPlugin(Plugin):
     def _is_current_generation(self, generation: int) -> bool:
         return self._stream_generation == generation and not self._stop_event.is_set()
 
-    async def _update_results(
-        self, query: Query, results: list[Result], generation: int
-    ) -> bool:
-        """Refresh results only while this is still the active generation.
-
-        A failed UpdateResults means the user has likely edited or dismissed the
-        original `ai ...` query. Stop the now-invisible stream rather than
-        consuming tokens without a usable UI update.
-        """
+    async def _update_results(self, query: Query, results: list[Result], generation: int) -> bool:
         if not self._is_current_generation(generation):
             return False
         try:
@@ -268,74 +516,83 @@ class AIAskPlugin(Plugin):
             return False
         return self._is_current_generation(generation)
 
-    async def stream_answer(self, query: Query, prompt: str, generation: int) -> str:
-        """Stream one completion and refresh the existing result in place.
-
-        UpdateResults preserves the original `ai ...` query text, avoiding the
-        re-query/cancel loop caused by ChangeQuery during a stream.
-        """
+    async def stream_answer(
+        self, query: Query, prompt: str, selected_skills: list[dict], generation: int
+    ) -> str:
         text = ""
         try:
-            skills = get_skills(self)
-            headers = skill_headers(skills)
-            user_content = prompt + skill_suffix(skills) if skills else prompt
+            contents = []
+            for skill in selected_skills:
+                contents.append(_read_skill(skill))
+            system_prompt = "\n\n---\n\n".join(part for part in contents if part)
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": prompt})
 
-            async with make_client(self) as client:
-                stream = await client.chat.completions.create(
-                    model=getattr(self.settings, "model", "fast") or "fast",
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": getattr(self.settings, "system_prompt", "")
-                            or "You are a helpful assistant.",
-                        },
-                        {"role": "user", "content": user_content},
-                    ],
-                    max_tokens=_as_int(getattr(self.settings, "max_tokens", 1000), 1000),
-                    temperature=0.7,
-                    stream=True,
-                    extra_headers=headers,
-                )
+            base_url = _setting_text(self, "base_url")
+            api_key = _setting_text(self, "api_key")
+            model = _setting_text(self, "model") or "fast"
+            timeout = _as_int(getattr(self.settings, "timeout", 60), 60)
+            headers = {"X-Skill-Count": str(len(selected_skills))}
 
-                chunks_since_update = 0
-                async for chunk in stream:
-                    if self._stop_event.is_set():
-                        break
-                    choices = getattr(chunk, "choices", None) or []
-                    if not choices:
-                        continue  # usage/final empty chunk from some providers
-                    content = getattr(choices[0].delta, "content", None)
-                    if content is None:
-                        continue  # role-only chunk
-                    text += content
-                    chunks_since_update += 1
-                    if chunks_since_update >= 6:
-                        updated = await self._update_results(
-                            query,
-                            [AIResult("Generating…", text, copy_text=text, icon=GENERATING_ICON)],
-                            generation,
-                        )
-                        if not updated:
-                            return text
-                        chunks_since_update = 0
+            def producer():
+                try:
+                    for content in _open_sse_stream(
+                        base_url,
+                        api_key,
+                        model,
+                        messages,
+                        _as_int(getattr(self.settings, "max_tokens", 1000), 1000),
+                        timeout,
+                        headers,
+                    ):
+                        if self._stop_event.is_set():
+                            break
+                        loop.call_soon_threadsafe(queue.put_nowait, ("chunk", content))
+                except Exception as error:
+                    loop.call_soon_threadsafe(queue.put_nowait, ("error", error))
+                finally:
+                    loop.call_soon_threadsafe(queue.put_nowait, ("done", None))
 
-                if text and self._is_current_generation(generation):
-                    await self._update_results(
+            loop = asyncio.get_running_loop()
+            queue: asyncio.Queue = asyncio.Queue()
+            worker = threading.Thread(target=producer, name="aiask-sse", daemon=True)
+            worker.start()
+
+            chunks_since_update = 0
+            while self._is_current_generation(generation):
+                kind, value = await queue.get()
+                if kind == "done":
+                    break
+                if kind == "error":
+                    raise value
+                text += value
+                chunks_since_update += 1
+                if chunks_since_update >= 6:
+                    if not await self._update_results(
                         query,
-                        [
-                            AIResult(
-                                "Answer ready — press Ctrl+C to copy",
-                                text,
-                                copy_text=text,
-                                icon=ANSWER_ICON,
-                            )
-                        ],
+                        [AIResult("Generating…", text, copy_text=text, icon=GENERATING_ICON)],
                         generation,
-                    )
-                return text
+                    ):
+                        return text
+                    chunks_since_update = 0
+
+            if text and self._is_current_generation(generation):
+                await self._update_results(
+                    query,
+                    [
+                        AIResult(
+                            "Answer ready — Enter or Ctrl+C to copy",
+                            text,
+                            copy_text=text,
+                            icon=ANSWER_ICON,
+                        )
+                    ],
+                    generation,
+                )
+            return text
         except asyncio.CancelledError:
-            # /stop or a newer user query cancelled this task. Preserve its
-            # partial text only if it is still the active task (handled above).
             return text
         except Exception as error:
             if self._is_current_generation(generation):
@@ -343,7 +600,7 @@ class AIAskPlugin(Plugin):
                 if text:
                     results.append(
                         AIResult(
-                            "Partial answer — press Ctrl+C to copy",
+                            "Partial answer — Enter or Ctrl+C to copy",
                             text,
                             copy_text=text,
                             icon=ANSWER_ICON,
@@ -353,45 +610,196 @@ class AIAskPlugin(Plugin):
                 await self._update_results(query, results, generation)
             return text
 
-    async def handle_command(self, cmd: str) -> Result | None:
-        if cmd == "/stop":
-            stopped = self.stop_stream()
-            subtitle = "Generation cancelled." if stopped else "No generation is currently active."
-            return Result("Stop requested", subtitle, icon=STOP_ICON)
-        if cmd == "/clear":
-            self.clear_last_answer()
-            return Result("Cleared", "Last answer history reset.", icon=CLEAR_ICON)
-        if cmd == "/last":
-            text = self._last_answer or "(nothing generated yet in this session)"
-            return AIResult(
-                "Last answer — Enter or Ctrl+C to copy",
-                text[:120] + ("…" if len(text) > 120 else ""),
-                copy_text=text,
-                icon=ANSWER_ICON,
-            )
+    # -- Commands ------------------------------------------------------------
+
+    def _skill_result(self, skill: dict) -> Result:
+        alias = str(skill.get("alias", "?"))
+        path = str(skill.get("path", ""))
+        valid, status = _skill_status(skill)
+        global_enabled = bool(skill.get("global", False))
+
+        async def toggle():
+            self.toggle_global(alias)
+            return False
+
+        async def delete():
+            self.delete_skill(alias)
+            return False
+
+        class SkillResult(Result):
+            async def callback(inner_self):
+                # Enter on /skills <alias> toggles global loading.
+                await toggle()
+                return ExecuteResponse(hide=False)
+
+            async def context_menu(inner_self):
+                return [
+                    ActionResult(
+                        "Disable global load" if global_enabled else "Enable global load",
+                        "Toggle automatic system-prompt loading",
+                        ICON,
+                        toggle,
+                    ),
+                    ActionResult("Delete skill", "Remove this skill record", CLEAR_ICON, delete),
+                ]
+
+        return SkillResult(
+            title=f"{'[Global] ' if global_enabled else ''}{alias}",
+            sub=f"{status} · {path} · Enter toggles global",
+            icon=ICON if valid else ERROR_ICON,
+        )
+
+    async def skills_command(self, command_text: str) -> list[Result]:
+        try:
+            # posix=False preserves Windows backslashes. Quotes permit paths
+            # containing spaces, e.g. "C:\\My Skills\\translate.md".
+            args = [token.strip('"') for token in shlex.split(command_text, posix=False)]
+        except ValueError as error:
+            return [Result("Invalid /skills command", str(error), icon=ERROR_ICON)]
+        if not args:
+            results = [
+                Result("Skills", "Use /skills add, edit, delete, toggle, or /skills-ui", icon=ICON)
+            ]
+            results.extend(self._skill_result(skill) for skill in _load_skills(self))
+            return results
+
+        command = args[0].lower()
+        try:
+            if command == "add":
+                if len(args) < 3:
+                    return [Result("Usage: /skills add <alias> <path> [global]", "Path may be relative to the plugin folder.", icon=ERROR_ICON)]
+                enabled = len(args) > 3 and args[3].lower() in {"global", "on", "true", "1"}
+                skill = self.upsert_skill(args[1], args[2], enabled)
+                return [Result("Skill added", f"{skill['alias']} · {skill['path']}", icon=ANSWER_ICON)]
+            if command == "edit":
+                if len(args) < 4:
+                    return [Result("Usage: /skills edit <old-alias> <new-alias> <path> [global]", "Edits metadata only, not skill-file contents.", icon=ERROR_ICON)]
+                enabled = len(args) > 4 and args[4].lower() in {"global", "on", "true", "1"}
+                skill = self.upsert_skill(args[2], args[3], enabled, args[1])
+                return [Result("Skill updated", f"{skill['alias']} · {skill['path']}", icon=ANSWER_ICON)]
+            if command in {"delete", "remove"}:
+                if len(args) != 2:
+                    return [Result("Usage: /skills delete <alias>", "", icon=ERROR_ICON)]
+                if not self.delete_skill(args[1]):
+                    return [Result("Skill not found", args[1], icon=ERROR_ICON)]
+                return [Result("Skill deleted", args[1], icon=CLEAR_ICON)]
+            if command in {"toggle", "global"}:
+                if len(args) != 2:
+                    return [Result("Usage: /skills toggle <alias>", "", icon=ERROR_ICON)]
+                skill = self.toggle_global(args[1])
+                state = "enabled" if skill["global"] else "disabled"
+                return [Result(f"Global load {state}", skill["alias"], icon=ICON)]
+            return [Result("Unknown /skills command", command, icon=ERROR_ICON)]
+        except ValueError as error:
+            return [Result("Skill change failed", str(error), icon=ERROR_ICON)]
+
+    def _parse_add(self, command_text: str) -> tuple[list[dict] | None, str | None, str | None]:
+        """Parse `/add <aliases> <question>`; returns skills, prompt, error.
+
+        Prefer colon-separated aliases (`/add translate:review:question`) when
+        more than one dynamic skill is needed. Space-separated form treats the
+        first matching alias as the selected skill, so natural-language prompts
+        cannot be accidentally consumed as aliases.
+        """
+        rest = command_text.strip()
+        if not rest:
+            return None, None, "Choose one or more skills below, then add your question."
+        available = {str(s.get("alias", "")).lower(): s for s in _load_skills(self)}
+        raw_parts = [part.strip() for part in re.split(r"\s*[:：]\s*", rest) if part.strip()]
+        if len(raw_parts) > 1:
+            aliases, prompt_parts = [], []
+            for part in raw_parts:
+                if not prompt_parts and part.lower() in available:
+                    aliases.append(part.lower())
+                else:
+                    prompt_parts.append(part)
+            prompt = " ".join(prompt_parts).strip()
+        else:
+            tokens = rest.split(maxsplit=1)
+            aliases = [tokens[0].lower()] if tokens and tokens[0].lower() in available else []
+            prompt = tokens[1].strip() if len(tokens) > 1 else ""
+        if not aliases:
+            return None, None, "Specify a valid skill alias after /add."
+        if not prompt:
+            return None, None, "Add your question after the selected skill alias."
+        selected = [available[alias] for alias in aliases]
+        for skill in selected:
+            valid, status = _skill_status(skill)
+            if not valid:
+                return None, None, f"Skill {skill['alias']} has {status}: {skill['path']}"
+        return selected, prompt, None
+
+    async def command_results(self, command_text: str) -> list[Result] | None:
+        tokens = _parse_ai_command(command_text)
+        if not tokens:
+            return None
+        head = tokens[0].lower()
+        tail = command_text[len(tokens[0]):].strip(" \t:：")
+
+        if head == "/skills-ui":
+            url = self.start_skills_ui()
+
+            async def open_ui():
+                try:
+                    response = await self.api.open_url(url)
+                    return not isinstance(response, ErrorResponse)
+                except Exception:
+                    return False
+
+            return [ActionResult("Open Skill manager", url, ICON, open_ui)]
+        if head == "/skills":
+            skills_match = re.match(r"^\s*/skills(?:\s+|\s*[:：]\s*)?(.*)$", command_text, flags=re.I)
+            return await self.skills_command(skills_match.group(1) if skills_match else "")
+        if head == "/add":
+            if not tail:
+                results = [Result("Choose a temporary skill", "Use /add <alias> <question>", icon=ICON)]
+                for skill in _load_skills(self):
+                    valid, status = _skill_status(skill)
+                    results.append(
+                        Result(
+                            str(skill.get("alias", "?")),
+                            f"{status} · {skill.get('path', '')}",
+                            icon=ICON if valid else ERROR_ICON,
+                        )
+                    )
+                return results
+            return None
         return None
 
 
 class MainSearchHandler(SearchHandler):
-    """Handles all queries for the `ai` action keyword."""
-
     async def callback(self, query: Query):
-        plugin: AIAskPlugin = self.plugin  # set by flogin before callback
-        q = query.text.strip()
+        plugin: AIAskPlugin = self.plugin
+        # QueryBuilder may leave a leading separator in the search text for
+        # forms such as `ai : /add : translate : question`.
+        raw = query.text.strip().lstrip(" \t:：")
 
-        cmd_result = await plugin.handle_command(q)
-        if cmd_result is not None:
-            return cmd_result
+        # The wildcard keyword exists solely to normalize `ai:/add...` and
+        # `ai：/add...`, which Flow otherwise routes as a non-keyword query.
+        # Flow sends an empty actionKeyword to global plugins, so only claim
+        # text that explicitly starts with this plugin's compact `ai:` prefix.
+        if query.keyword != "ai":
+            compact = re.match(r"^ai\s*[:：]\s*(.+)$", raw, flags=re.I | re.S)
+            if not compact:
+                return []
+            raw = compact.group(1).strip()
 
-        if not q:
-            n_skills = len(get_skills(plugin))
-            return Result(
-                "Ask the AI assistant",
-                f"model: {getattr(plugin.settings, 'model', 'fast')} · "
-                f"max_tokens: {getattr(plugin.settings, 'max_tokens', 1000)}"
-                + (f" · skills: {n_skills}" if n_skills else ""),
-                icon=ICON,
-            )
+        if not raw:
+            global_skills, problems = _active_global_skills(plugin)
+            subtitle = f"global skills: {len(global_skills)}"
+            if problems:
+                subtitle += f" · invalid: {', '.join(problems)}"
+            return Result("Ask the AI assistant", subtitle, icon=ICON)
+
+        # Normalize command separator variants after Flow routed `ai <query>`.
+        tokens = _parse_ai_command(raw)
+        command = tokens[0].lower() if tokens else ""
+        # `/add <alias> <question>` is the only command that continues into
+        # normal chat after parsing; every other recognized command returns UI.
+        if command != "/add":
+            command_results = await plugin.command_results(raw)
+            if command_results is not None:
+                return command_results
 
         if not _is_configured(plugin):
             return Result(
@@ -400,12 +808,30 @@ class MainSearchHandler(SearchHandler):
                 icon=ERROR_ICON,
             )
 
-        plugin.start_stream(query, q)
-        return Result(
-            "Generating…",
-            "Answer is streaming below. Use ai /last, then Ctrl+C, to copy it.",
-            icon=GENERATING_ICON,
-        )
+        dynamic_skills: list[dict] = []
+        prompt = raw
+        if command == "/add":
+            # Direct command text after `/add` (including : / ： variants).
+            add_match = re.match(r"^\s*/add(?:\s+|\s*[:：]\s*)?(.*)$", raw, flags=re.I)
+            add_text = add_match.group(1) if add_match else ""
+            if not add_text:
+                # The bare command is an interactive skill picker, not an error.
+                return await plugin.command_results(raw)
+            dynamic_skills, prompt, error = plugin._parse_add(add_text)
+            if error:
+                return Result("Dynamic skill not loaded", error, icon=ERROR_ICON)
+
+        global_skills, problems = _active_global_skills(plugin)
+        if problems:
+            return Result(
+                "Global skill path error",
+                "; ".join(problems),
+                icon=ERROR_ICON,
+            )
+        selected = global_skills + (dynamic_skills or [])
+        plugin.start_stream(query, prompt, selected)
+        detail = f"global: {len(global_skills)} · temporary: {len(dynamic_skills or [])}"
+        return Result("Generating…", detail, icon=GENERATING_ICON)
 
     async def on_error(self, query: Query, error: Exception):
         return Result("AI Ask error", _friendly_error(error), icon=ERROR_ICON)
@@ -414,8 +840,6 @@ class MainSearchHandler(SearchHandler):
 def main():
     plugin = AIAskPlugin()
     plugin.register_search_handler(MainSearchHandler())
-    # The default flogin handler logs raw incoming query/settings JSON, including
-    # api_key. Do not create flogin.log; errors are shown as sanitized UI results.
     plugin.run(setup_default_log_handler=False)
 
 

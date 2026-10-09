@@ -69,6 +69,7 @@ jobs:
             "requirements.txt",
             "README.md",
             "Images",
+            "skill_files",
             "lib"
           )
           foreach ($path in $include) {

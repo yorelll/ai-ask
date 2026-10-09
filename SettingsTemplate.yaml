@@ -29,15 +29,6 @@ body:
       label: Timeout (seconds)
       description: "Per-request timeout in seconds. Default 60."
       defaultValue: "60"
-  - type: input
+  - type: textBlock
     attributes:
-      name: system_prompt
-      label: System Prompt
-      description: "Optional. System prompt sent before the user message."
-      defaultValue: "You are a helpful assistant."
-  - type: textarea
-    attributes:
-      name: skills
-      label: Skills (one per line)
-      description: "One skill per line. Each skill is sent as a header (X-Skill-1, X-Skill-2, ...) and appended at the end of your prompt."
-      defaultValue: ""
+      description: "Skills are managed dynamically. Use `ai /skills` for Flow command management, or `ai /skills-ui` for the visual table. Enabled global skills are combined as the system prompt; `ai /add` loads optional skills for one request only."
