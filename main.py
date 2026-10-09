@@ -748,7 +748,7 @@ class AIAskPlugin(Plugin):
 
             return [ActionResult("Open Skill manager", url, ICON, open_ui)]
         if head == "/skills":
-            skills_match = re.match(r"^\s*/skills(?:\s+|\s*[:：]\s*)?(.*)$", command_text, flags=re.I)
+            skills_match = re.match(r"^\s*/skills(?:[\s:：]+)?(.*)$", command_text, flags=re.I)
             return await self.skills_command(skills_match.group(1) if skills_match else "")
         if head == "/add":
             if not tail:
@@ -812,7 +812,7 @@ class MainSearchHandler(SearchHandler):
         prompt = raw
         if command == "/add":
             # Direct command text after `/add` (including : / ： variants).
-            add_match = re.match(r"^\s*/add(?:\s+|\s*[:：]\s*)?(.*)$", raw, flags=re.I)
+            add_match = re.match(r"^\s*/add(?:[\s:：]+)?(.*)$", raw, flags=re.I)
             add_text = add_match.group(1) if add_match else ""
             if not add_text:
                 # The bare command is an interactive skill picker, not an error.
