@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-V2 protocol E2E test: this script plays the role of Flow Launcher talking to
-main.py (a flogin/Python_v2 plugin) over newline-delimited JSON-RPC on stdin/stdout.
+End-to-end Python_v2 protocol test for AI Ask.
 
-A dedicated reader task continuously consumes stdout, answers any `ChangeQuery`
-requests coming FROM the plugin (as Flow does), and records streaming frames.
+Acts as a tiny Flow Launcher V2 client: starts main.py, sends initialize/query
+requests over newline-delimited JSON-RPC, answers plugin->Flow UpdateResults
+requests, and verifies a real streamed answer arrives as an updated result.
 
-Usage (requires a real API key, never stored in source):
+Usage (real endpoint; key is intentionally never stored in source):
     set AI_API_KEY=your-key              # cmd.exe
     $env:AI_API_KEY = "your-key"         # PowerShell
     python test_v2_protocol.py
@@ -36,27 +36,27 @@ SETTINGS = {
     "max_tokens": "200",
     "timeout": "60",
     "system_prompt": "You are a helpful assistant.",
-    "skills": "be concise\nreply in lowercase",
+    # Intentional CJK coverage: verifies non-ASCII skills remain in the prompt
+    # yet are not sent as invalid non-ASCII HTTP headers.
+    "skills": "be concise\n用中文回答",
 }
 
 
 class FlowSim:
-    """Minimal Flow Launcher V2 side: spawns plugin, issues RPCs, auto-answers
-    ChangeQuery requests, exposes the streamed text."""
+    """Minimal Flow V2 side: sends RPCs and handles plugin->Flow requests."""
 
     def __init__(self):
         self.proc = None
-        self._req_id = 0
+        self._request_id = 0
         self._pending: dict[int, asyncio.Future] = {}
-        self.query_title = []
-        self.change_query_seen = 0
-        self.final_change_query = ""
-        self.query_response_seen = False
+        self.updated_results: list[dict] = []
+        self.clipboard_requests: list[list] = []
         self.writer_lock = asyncio.Lock()
 
     async def start(self):
         self.proc = await asyncio.create_subprocess_exec(
-            str(PY), str(ROOT / "main.py"),
+            str(PY),
+            str(ROOT / "main.py"),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -67,10 +67,7 @@ class FlowSim:
 
     async def _stderr_reader(self):
         assert self.proc and self.proc.stderr
-        while True:
-            raw = await self.proc.stderr.readline()
-            if not raw:
-                break
+        while raw := await self.proc.stderr.readline():
             line = raw.decode("utf-8", "replace").rstrip()
             if line:
                 print(f"[plugin-stderr] {line}")
@@ -82,37 +79,36 @@ class FlowSim:
             await self.proc.stdin.drain()
 
     async def request(self, method: str, params: list, timeout: float = 15) -> dict:
-        self._req_id += 1
-        rid = self._req_id
-        fut = asyncio.get_event_loop().create_future()
-        self._pending[rid] = fut
-        await self._send({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
-        return await asyncio.wait_for(fut, timeout=timeout)
+        self._request_id += 1
+        request_id = self._request_id
+        future = asyncio.get_event_loop().create_future()
+        self._pending[request_id] = future
+        await self._send(
+            {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
+        )
+        return await asyncio.wait_for(future, timeout=timeout)
 
     async def _reader(self):
-        """Continuously consume stdout. Answer ChangeQuery requests as Flow would."""
         assert self.proc and self.proc.stdout
-        while True:
-            raw = await self.proc.stdout.readline()
-            if not raw:
-                break
+        while raw := await self.proc.stdout.readline():
             try:
-                msg = json.loads(raw.decode("utf-8"))
+                message = json.loads(raw.decode("utf-8"))
             except json.JSONDecodeError:
                 continue
 
-            if "method" in msg and "id" in msg:
-                # request from plugin -> we must respond (Flow-side)
-                if msg["method"] == "ChangeQuery":
-                    self.change_query_seen += 1
-                    self.final_change_query = msg["params"][0]
-                resp = {"jsonrpc": "2.0", "id": msg["id"], "result": None}
-                await self._send(resp)
-
-            elif "id" in msg and ("result" in msg or "error" in msg):
-                fut = self._pending.pop(msg["id"], None)
-                if fut and not fut.done():
-                    fut.set_result(msg)
+            if "method" in message and "id" in message:
+                # Request FROM the plugin. This is where a real Flow instance
+                # performs UpdateResults or ChangeQuery before acknowledging it.
+                if message["method"] == "UpdateResults":
+                    response = message["params"][1]
+                    self.updated_results.append(response)
+                elif message["method"] == "CopyToClipboard":
+                    self.clipboard_requests.append(message["params"])
+                await self._send({"jsonrpc": "2.0", "id": message["id"], "result": None})
+            elif "id" in message and ("result" in message or "error" in message):
+                future = self._pending.pop(message["id"], None)
+                if future and not future.done():
+                    future.set_result(message)
 
     async def stop(self):
         if self.proc and self.proc.returncode is None:
@@ -131,14 +127,18 @@ async def main() -> int:
     sim = FlowSim()
     await sim.start()
     try:
-        init_meta = {
-            "id": "test-plugin", "name": "AIAsk", "actionKeywords": ["ai"],
+        metadata = {
+            "id": "test-plugin",
+            "name": "AIAsk",
+            "actionKeywords": ["ai"],
             "pluginDirectory": str(ROOT),
             "pluginSettingsDirectoryPath": str(ROOT / "settings"),
             "executeFileName": "main.py",
         }
-        r = await sim.request("initialize", [{"currentPluginMetadata": init_meta}], timeout=10)
-        print("[init]", json.dumps(r)[:120])
+        initialize = await sim.request(
+            "initialize", [{"currentPluginMetadata": metadata}], timeout=10
+        )
+        print("[initialize]", json.dumps(initialize)[:120])
 
         raw_query = {
             "search": "Reply with exactly: STREAM_OK",
@@ -146,37 +146,36 @@ async def main() -> int:
             "isReQuery": False,
             "actionKeyword": "ai",
         }
-        qr = await sim.request("query", [raw_query, SETTINGS], timeout=120)
-        res = qr.get("result", {})
-        titles = [x.get("title") for x in (res.get("result") or [])]
-        print("[query response] titles =", titles)
+        query_response = await sim.request("query", [raw_query, SETTINGS], timeout=120)
+        initial_results = query_response.get("result", {}).get("result") or []
+        print("[query] titles =", [result.get("title") for result in initial_results])
 
-        # Wait for streaming to settle (ChangeQuery frames arrive async)
-        for i in range(12):
+        # Streaming UpdateResults calls arrive asynchronously.
+        for _ in range(12):
             await asyncio.sleep(5)
-            print(f"[wait {5*(i+1)}s] ChangeQuery frames so far: {sim.change_query_seen}",
-                  flush=True)
-            if sim.change_query_seen > 0:
+            if sim.updated_results:
                 break
 
-        print("\n=== RESULT ===")
-        print("query_response_seen:   ", titles is not None)
-        print("ChangeQuery frames:    ", sim.change_query_seen)
-        print("final ChangeQuery text:", repr(sim.final_change_query)[:200])
+        flattened = json.dumps(sim.updated_results, ensure_ascii=False).lower()
+        print("UpdateResults frames:", len(sim.updated_results))
+        print("Last update:", json.dumps(sim.updated_results[-1], ensure_ascii=False)[:300]
+              if sim.updated_results else "<none>")
 
-        ok = True
-        if not titles:
-            print("FAIL: no query response frame")
-            ok = False
-        if sim.change_query_seen == 0:
-            print("FAIL: no streaming ChangeQuery frames")
-            ok = False
-        elif "stream_ok" not in sim.final_change_query.lower():
-            print("FAIL: streamed text did not contain expected reply")
-            ok = False
-        else:
-            print("[ok] streamed text contains expected reply")
-        return 0 if ok else 1
+        assert initial_results and initial_results[0]["title"] == "Generating…"
+        assert sim.updated_results, "no streamed UpdateResults frame received"
+        assert "stream_ok" in flattened, "streamed answer did not contain expected reply"
+        assert "error" not in flattened, "non-ASCII skill caused a request error"
+
+        # Execute the updated answer result exactly as Flow does: the plugin
+        # should issue a CopyToClipboard request, not merely hide its window.
+        final_result = sim.updated_results[-1]["result"][0]
+        action = final_result["jsonRPCAction"]
+        action_response = await sim.request(action["method"], action.get("parameters", []))
+        assert action_response.get("result", {}).get("hide") is True
+        assert sim.clipboard_requests, "answer Enter action did not request clipboard copy"
+        assert "stream_ok" in sim.clipboard_requests[-1][0].lower()
+        print("[ok] V2 streaming, CJK skills, and Enter-to-copy passed")
+        return 0
     finally:
         await sim.stop()
 

@@ -2,12 +2,12 @@
 """
 AI Ask - Flow Launcher plugin (Python_v2).
 
-Chat with any OpenAI-compatible LLM (streaming) directly in Flow Launcher,
-using the Python_v2 long-lived protocol (streaming JSON-RPC via flogin).
+Chat with an OpenAI-compatible LLM directly in Flow Launcher. This plugin uses
+the long-lived Python_v2 protocol and updates its result list as tokens arrive.
 
-Python version: 3.10+
-Dependencies are bundled into the `lib` folder by the GitHub Action
-(pip install -r requirements.txt -t lib), so end users don't install anything.
+Release artifact requirement: 64-bit CPython 3.11.x. Flow Launcher's embedded
+CPython 3.11.4 is the supported runtime. Dependencies are bundled into `lib/`
+by the GitHub Action, so end users do not install packages manually.
 """
 
 from __future__ import annotations
@@ -18,21 +18,31 @@ import re
 import sys
 from pathlib import Path
 
-# Make the bundled `lib` (and plugin's own folders) importable. Under the
-# Python_v2 runner Flow also injects the plugin/lib dirs into sys.path via -c,
-# but keeping this guarantees it works when running from a plain interpreter too.
+# Flow's Python_v2 runner injects these directories itself, but maintaining the
+# paths here also supports direct local execution.
 PLUGIN_DIR = Path(__file__).resolve().parent
 sys.path = [str(PLUGIN_DIR / p) for p in (".", "lib", "plugin")] + sys.path
 
-from flogin import ExecuteResponse, Plugin, Query, Result, SearchHandler  # noqa: E402
+from flogin import ErrorResponse, ExecuteResponse, Plugin, Query, Result, SearchHandler  # noqa: E402
 from openai import AsyncOpenAI  # noqa: E402
 
+# Flogin logs raw JSON-RPC input at INFO/DEBUG; incoming query settings contain
+# api_key, so suppress those logs even if a host configures the root logger.
+logging.getLogger("flogin").setLevel(logging.WARNING)
 log = logging.getLogger("aiask")
+log.addHandler(logging.NullHandler())
+log.propagate = False
+
 ICON = "Images\\plugin.png"
+GENERATING_ICON = "Images\\generating.png"
+ANSWER_ICON = "Images\\answer.png"
+STOP_ICON = "Images\\stop.png"
+CLEAR_ICON = "Images\\clear.png"
+ERROR_ICON = "Images\\error.png"
 
 
 # ---------------------------------------------------------------------------
-# Settings helpers
+# Settings and request helpers
 # ---------------------------------------------------------------------------
 
 def _as_int(value, default):
@@ -44,21 +54,34 @@ def _as_int(value, default):
         return default
 
 
+def _setting_text(plugin, name: str) -> str:
+    value = getattr(plugin.settings, name, "")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def _is_configured(plugin) -> bool:
+    return bool(_setting_text(plugin, "base_url") and _setting_text(plugin, "api_key"))
+
+
 def get_skills(plugin) -> list:
-    """Return configured skills as a list (one per line in the settings)."""
+    """Return configured skills as a list (one per nonblank line)."""
     raw = getattr(plugin.settings, "skills", "") or ""
     if isinstance(raw, str):
-        return [s.strip() for s in raw.splitlines() if s.strip()]
-    return [str(s).strip() for s in raw if str(s).strip()]
+        return [skill.strip() for skill in raw.splitlines() if skill.strip()]
+    return [str(skill).strip() for skill in raw if str(skill).strip()]
 
 
 def skill_headers(skills) -> dict:
-    """Map skills to headers: X-Skill-1, X-Skill-2, ... (control chars stripped,
-    original numbering kept). Full skill text still goes into the prompt."""
+    """Map ASCII-safe skills to X-Skill-N HTTP headers.
+
+    httpx permits only ASCII HTTP header values. A non-ASCII skill remains fully
+    effective in the prompt suffix, but is omitted from headers rather than
+    failing the complete request. Numbering follows the original skill index.
+    """
     headers = {}
     for i, skill in enumerate(skills, start=1):
         clean = re.sub(r"[\x00-\x1f\x7f]+", " ", skill).strip()
-        if clean:
+        if clean and clean.isascii():
             headers[f"X-Skill-{i}"] = clean
     return headers
 
@@ -66,18 +89,16 @@ def skill_headers(skills) -> dict:
 def skill_suffix(skills) -> str:
     if not skills:
         return ""
-    numbered = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(skills))
+    numbered = "\n".join(f"{i + 1}. {skill}" for i, skill in enumerate(skills))
     return f"\n\n[Skills]\n{numbered}"
 
 
 def make_client(plugin) -> AsyncOpenAI:
-    """Build a configured async OpenAI client from Flow-injected settings."""
-    base_url = getattr(plugin.settings, "base_url", "") or ""
-    api_key = getattr(plugin.settings, "api_key", "") or ""
+    """Build an async OpenAI client from Flow-injected settings."""
+    base_url = _setting_text(plugin, "base_url")
+    api_key = _setting_text(plugin, "api_key")
     if not base_url or not api_key:
-        raise ValueError(
-            "AI Ask is not configured. Open the plugin settings and set base_url and api_key."
-        )
+        raise ValueError("not configured")
     return AsyncOpenAI(
         base_url=base_url,
         api_key=api_key,
@@ -85,12 +106,39 @@ def make_client(plugin) -> AsyncOpenAI:
     )
 
 
+def _friendly_error(error: Exception) -> str:
+    """Return a safe message; never render raw URLs, server bodies, or secrets."""
+    name = type(error).__name__.lower()
+    if isinstance(error, ValueError):
+        return "Configure Base URL and API Key in the plugin settings."
+    if "authentication" in name or "permission" in name:
+        return "Authentication failed. Check the API key in plugin settings."
+    if "ratelimit" in name:
+        return "Rate limit reached. Please try again later."
+    if "timeout" in name:
+        return "The AI request timed out. Try again or increase Timeout."
+    if "connection" in name or "connect" in name:
+        return "Could not connect to the AI endpoint. Check Base URL and network."
+    return "The AI request failed. Check endpoint, model, and plugin settings."
+
+
 # ---------------------------------------------------------------------------
-# Results
+# Result types
 # ---------------------------------------------------------------------------
 
+async def _copy_to_clipboard(result: Result, text: str) -> bool:
+    """Call Flow's V2 CopyToClipboard RPC from a selectable plugin result."""
+    if not text or result.plugin is None:
+        return False
+    try:
+        response = await result.plugin.jsonrpc.request("CopyToClipboard", [text, False, True])
+        return not isinstance(response, ErrorResponse)
+    except Exception:
+        return False
+
+
 class ClearHistoryResult(Result):
-    """Context-menu command that clears the current plugin session's answer."""
+    """Context-menu command that clears the current session's last answer."""
 
     async def callback(self) -> ExecuteResponse:
         if self.plugin is not None:
@@ -98,31 +146,45 @@ class ClearHistoryResult(Result):
         return ExecuteResponse(hide=False)
 
 
-class AIResult(Result):
-    """A copyable result for /last. Enter copies `copy_text`, then hides Flow."""
+class CopyAnswerResult(Result):
+    """A context-menu result that actually copies its answer on Enter."""
 
-    def __init__(self, title, sub="", copy_text="", icon=ICON):
-        super().__init__(title=title, sub=sub, icon=icon, copy_text=copy_text)
-        self._copy_text = copy_text
+    def __init__(self, text: str):
+        super().__init__(
+            title="Copy last answer",
+            sub="Copy the latest response to clipboard",
+            icon=ANSWER_ICON,
+            copy_text=text,
+        )
+        self._answer = text
 
     async def callback(self) -> ExecuteResponse:
-        # Flow handles Result.copyText. Close the window only after the action.
-        return ExecuteResponse(hide=True)
+        copied = await _copy_to_clipboard(self, self._answer)
+        return ExecuteResponse(hide=copied)
+
+
+class AIResult(Result):
+    """An answer result that copies its text to the clipboard on Enter."""
+
+    def __init__(self, title, sub="", copy_text=None, icon=ICON):
+        super().__init__(title=title, sub=sub, icon=icon, copy_text=copy_text)
+        self._answer = copy_text or ""
+
+    async def callback(self) -> ExecuteResponse:
+        copied = await _copy_to_clipboard(self, self._answer)
+        return ExecuteResponse(hide=copied)
 
     async def context_menu(self):
-        return [
-            Result(
-                "Copy last answer",
-                sub="Copy the latest response to clipboard",
-                icon=ICON,
-                copy_text=self._copy_text,
-            ),
+        results = [
             ClearHistoryResult(
                 "Clear conversation",
                 sub="Stop generation and reset the session answer",
-                icon=ICON,
+                icon=CLEAR_ICON,
             ),
         ]
+        if self._answer:
+            results.insert(0, CopyAnswerResult(self._answer))
+        return results
 
 
 # ---------------------------------------------------------------------------
@@ -132,25 +194,28 @@ class AIResult(Result):
 class AIAskPlugin(Plugin):
     """Long-lived Python_v2 plugin.
 
-    Flow injects the current Settings.json dictionary as the second argument of
-    every query RPC; flogin exposes it through `self.settings`.
+    Flow injects the current settings dictionary as the second parameter of
+    every query RPC; flogin exposes it as `self.settings`.
     """
 
     def __init__(self, **options) -> None:
-        # Flow sends the current settings dictionary with every query. Leave
-        # flogin's updates enabled so changing plugin settings takes effect on
-        # the next query without restarting Flow.
+        # Leave settings updates enabled so changes in Flow's settings dialog
+        # apply on the next query without restarting Flow.
         super().__init__(**options)
         self._stop_event = asyncio.Event()
         self._stream_task: asyncio.Task | None = None
+        self._stream_generation = 0
         self._last_answer = ""
 
     def clear_last_answer(self) -> None:
+        # Invalidate the running task before cancellation, so its finally block
+        # cannot restore a partial answer after this explicit clear command.
+        self._stream_generation += 1
         self.stop_stream()
         self._last_answer = ""
 
     def stop_stream(self) -> bool:
-        """Stop the active request even if it is waiting for an HTTP response."""
+        """Cancel an active stream, including a pending HTTP request."""
         self._stop_event.set()
         task = self._stream_task
         if task is not None and not task.done():
@@ -158,26 +223,41 @@ class AIAskPlugin(Plugin):
             return True
         return False
 
-    def start_stream(self, prompt: str) -> None:
-        """Cancel an earlier generation, then start exactly one new task."""
+    def start_stream(self, query: Query, prompt: str) -> None:
+        """Cancel any previous stream, then begin exactly one new stream."""
         self.stop_stream()
         self._stop_event.clear()
+        self._stream_generation += 1
+        generation = self._stream_generation
 
         async def run():
+            task = asyncio.current_task()
             try:
-                self._last_answer = await self.stream_answer(prompt)
+                answer = await self.stream_answer(query, prompt)
+                # Do not let a cancelled older task or /clear restore stale text.
+                if self._stream_task is task and self._stream_generation == generation:
+                    self._last_answer = answer
             finally:
-                if self._stream_task is asyncio.current_task():
+                if self._stream_task is task:
                     self._stream_task = None
                     self._stop_event.clear()
 
         self._stream_task = asyncio.create_task(run(), name="aiask-stream")
 
-    async def stream_answer(self, prompt: str) -> str:
-        """Stream one completion and push partial output into Flow's query box.
+    async def _update_results(self, query: Query, results: list[Result]) -> None:
+        """Best-effort result refresh. It is harmless if the user moved on."""
+        try:
+            await query.update_results(results)
+        except Exception:
+            # The current Flow query can change while an answer is streaming.
+            # Do not surface a transport detail or restart a stale generation.
+            pass
 
-        Python_v2 uses full-duplex newline-delimited JSON-RPC, so ChangeQuery
-        calls are valid while the original query request has already returned.
+    async def stream_answer(self, query: Query, prompt: str) -> str:
+        """Stream one completion and refresh the existing result in place.
+
+        UpdateResults preserves the original `ai ...` query text, avoiding the
+        re-query/cancel loop caused by ChangeQuery during a stream.
         """
         text = ""
         try:
@@ -202,7 +282,7 @@ class AIAskPlugin(Plugin):
                     extra_headers=headers,
                 )
 
-                chunks_since_push = 0
+                chunks_since_update = 0
                 async for chunk in stream:
                     if self._stop_event.is_set():
                         break
@@ -213,43 +293,62 @@ class AIAskPlugin(Plugin):
                     if content is None:
                         continue  # role-only chunk
                     text += content
-                    chunks_since_push += 1
-                    if chunks_since_push >= 6:
-                        await self.api.change_query(text, False)
-                        chunks_since_push = 0
+                    chunks_since_update += 1
+                    if chunks_since_update >= 6:
+                        await self._update_results(
+                            query,
+                            [AIResult("Generating…", text, copy_text=text, icon=GENERATING_ICON)],
+                        )
+                        chunks_since_update = 0
 
-                if chunks_since_push:
-                    await self.api.change_query(text, False)
+                if text:
+                    await self._update_results(
+                        query,
+                        [
+                            AIResult(
+                                "Answer ready — press Ctrl+C to copy",
+                                text,
+                                copy_text=text,
+                                icon=ANSWER_ICON,
+                            )
+                        ],
+                    )
                 return text
         except asyncio.CancelledError:
-            # /stop or a newer query cancels the task. Preserve partial text,
-            # but don't surface cancellation as an error in the query box.
+            # /stop or a newer user query cancelled this task. Preserve its
+            # partial text only if it is still the active task (handled above).
             return text
-        except Exception as e:
-            log.exception("streaming failed")
+        except Exception as error:
             if not self._stop_event.is_set():
-                try:
-                    await self.api.change_query(f"AI Ask error: {e}", False)
-                except Exception:
-                    pass
+                results: list[Result] = []
+                if text:
+                    results.append(
+                        AIResult(
+                            "Partial answer — press Ctrl+C to copy",
+                            text,
+                            copy_text=text,
+                            icon=ANSWER_ICON,
+                        )
+                    )
+                results.append(Result("AI Ask error", _friendly_error(error), icon=ERROR_ICON))
+                await self._update_results(query, results)
             return text
 
     async def handle_command(self, cmd: str) -> Result | None:
         if cmd == "/stop":
             stopped = self.stop_stream()
-            subtitle = (
-                "Generation cancelled." if stopped else "No generation is currently active."
-            )
-            return AIResult("Stop requested", subtitle, copy_text="")
+            subtitle = "Generation cancelled." if stopped else "No generation is currently active."
+            return Result("Stop requested", subtitle, icon=STOP_ICON)
         if cmd == "/clear":
             self.clear_last_answer()
-            return AIResult("Cleared", "Last answer history reset.", copy_text="")
+            return Result("Cleared", "Last answer history reset.", icon=CLEAR_ICON)
         if cmd == "/last":
             text = self._last_answer or "(nothing generated yet in this session)"
             return AIResult(
-                "Last answer (Enter to copy to clipboard)",
+                "Last answer — Enter or Ctrl+C to copy",
                 text[:120] + ("…" if len(text) > 120 else ""),
                 copy_text=text,
+                icon=ANSWER_ICON,
             )
         return None
 
@@ -267,29 +366,38 @@ class MainSearchHandler(SearchHandler):
 
         if not q:
             n_skills = len(get_skills(plugin))
-            return AIResult(
+            return Result(
                 "Ask the AI assistant",
                 f"model: {getattr(plugin.settings, 'model', 'fast')} · "
                 f"max_tokens: {getattr(plugin.settings, 'max_tokens', 1000)}"
                 + (f" · skills: {n_skills}" if n_skills else ""),
-                copy_text="",
+                icon=ICON,
             )
 
-        plugin.start_stream(q)
-        return AIResult(
+        if not _is_configured(plugin):
+            return Result(
+                "Configure AI Ask",
+                "Open plugin settings and set Base URL plus API Key.",
+                icon=ERROR_ICON,
+            )
+
+        plugin.start_stream(query, q)
+        return Result(
             "Generating…",
-            "Answer will stream into the query box. Use ai /last to copy it.",
-            copy_text="",
+            "Answer is streaming below. Use ai /last, then Ctrl+C, to copy it.",
+            icon=GENERATING_ICON,
         )
 
     async def on_error(self, query: Query, error: Exception):
-        return AIResult("AI Ask error", str(error), copy_text="")
+        return Result("AI Ask error", _friendly_error(error), icon=ERROR_ICON)
 
 
 def main():
     plugin = AIAskPlugin()
     plugin.register_search_handler(MainSearchHandler())
-    plugin.run()
+    # The default flogin handler logs raw incoming query/settings JSON, including
+    # api_key. Do not create flogin.log; errors are shown as sanitized UI results.
+    plugin.run(setup_default_log_handler=False)
 
 
 if __name__ == "__main__":
