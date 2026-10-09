@@ -14,6 +14,7 @@ import json
 import logging
 import re
 import shlex
+import socket
 import ssl
 import sys
 import threading
@@ -43,7 +44,8 @@ CLEAR_ICON = "Images\\clear.png"
 ERROR_ICON = "Images\\error.png"
 
 DEFAULT_SKILLS = {"version": 1, "skills": []}
-SKILL_ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+# Alias may be English or Chinese/etc., but must stay a single command token.
+SKILL_ALIAS_RE = re.compile(r"^[^\s:：/\\]{1,64}$", re.UNICODE)
 COMMAND_SPLIT_RE = re.compile(r"(?:\s+|\s*[:：]\s*)+")
 
 
@@ -175,6 +177,42 @@ def _parse_ai_command(text: str) -> list[str]:
     return [part for part in COMMAND_SPLIT_RE.split(normalized) if part]
 
 
+def _flag_from_tail(value: str) -> tuple[str, str | None]:
+    """Split an optional colon-delimited global flag from a Windows path tail."""
+    match = re.match(r"^(.*?)(?:\s*[:：]\s*)(global|on|true|1)\s*$", value, flags=re.I)
+    if match:
+        return match.group(1).strip(), match.group(2).lower()
+    return value.strip(), None
+
+
+def _skills_command_args(command_text: str) -> list[str]:
+    """Parse /skills subcommands without corrupting Windows drive colons.
+
+    Space form supports quoted Windows paths. Colon form parses only the command
+    fields; all remaining colons belong to the path or prompt content.
+    """
+    text = command_text.strip()
+    compact = re.match(r"^(add|edit|toggle|global|delete|remove)\s*[:：]\s*(.*)$", text, flags=re.I | re.S)
+    if not compact:
+        return [part.strip('"') for part in shlex.split(text, posix=False)]
+
+    command, tail = compact.group(1).lower(), compact.group(2)
+    if command in {"toggle", "global", "delete", "remove"}:
+        return [command, tail.strip()]
+    if command == "add":
+        match = re.match(r"^([^\s:：]+)\s*[:：]\s*(.+)$", tail, flags=re.S)
+        if not match:
+            return [command]
+        path, flag = _flag_from_tail(match.group(2))
+        return [command, match.group(1), path] + ([flag] if flag else [])
+    # edit: old alias : new alias : path [: global]
+    match = re.match(r"^([^\s:：]+)\s*[:：]\s*([^\s:：]+)\s*[:：]\s*(.+)$", tail, flags=re.S)
+    if not match:
+        return [command]
+    path, flag = _flag_from_tail(match.group(3))
+    return [command, match.group(1), match.group(2), path] + ([flag] if flag else [])
+
+
 # ---------------------------------------------------------------------------
 # OpenAI-compatible HTTP/SSE client (stdlib only; no Python-ABI dependency)
 # ---------------------------------------------------------------------------
@@ -226,22 +264,27 @@ def _open_sse_stream(
     except TimeoutError as error:
         raise ChatHTTPError("timeout") from error
 
-    with response:
-        for raw in response:
-            line = raw.decode("utf-8", errors="replace").strip()
-            if not line.startswith("data:"):
-                continue
-            data = line[5:].strip()
-            if data == "[DONE]":
-                break
-            try:
-                event = json.loads(data)
-            except json.JSONDecodeError:
-                continue
-            for choice in event.get("choices") or []:
-                content = (choice.get("delta") or {}).get("content")
-                if isinstance(content, str) and content:
-                    yield content
+    try:
+        with response:
+            for raw in response:
+                line = raw.decode("utf-8", errors="replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    event = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                for choice in event.get("choices") or []:
+                    content = (choice.get("delta") or {}).get("content")
+                    if isinstance(content, str) and content:
+                        yield content
+    except (TimeoutError, socket.timeout) as error:
+        raise ChatHTTPError("timeout") from error
+    except OSError as error:
+        raise ChatHTTPError("connection failed") from error
 
 
 def _friendly_error(error: Exception) -> str:
@@ -593,6 +636,9 @@ class AIAskPlugin(Plugin):
                 )
             return text
         except asyncio.CancelledError:
+            # Producer is a daemon thread and watches _stop_event. It may still
+            # be unwinding urlopen/read while the Python_v2 task is cancelled.
+            self._stop_event.set()
             return text
         except Exception as error:
             if self._is_current_generation(generation):
@@ -651,9 +697,8 @@ class AIAskPlugin(Plugin):
 
     async def skills_command(self, command_text: str) -> list[Result]:
         try:
-            # posix=False preserves Windows backslashes. Quotes permit paths
-            # containing spaces, e.g. "C:\\My Skills\\translate.md".
-            args = [token.strip('"') for token in shlex.split(command_text, posix=False)]
+            # Preserves Windows backslashes and supports quoted paths with spaces.
+            args = _skills_command_args(command_text)
         except ValueError as error:
             return [Result("Invalid /skills command", str(error), icon=ERROR_ICON)]
         if not args:
@@ -705,19 +750,31 @@ class AIAskPlugin(Plugin):
         if not rest:
             return None, None, "Choose one or more skills below, then add your question."
         available = {str(s.get("alias", "")).lower(): s for s in _load_skills(self)}
-        raw_parts = [part.strip() for part in re.split(r"\s*[:：]\s*", rest) if part.strip()]
-        if len(raw_parts) > 1:
-            aliases, prompt_parts = [], []
-            for part in raw_parts:
-                if not prompt_parts and part.lower() in available:
-                    aliases.append(part.lower())
-                else:
-                    prompt_parts.append(part)
-            prompt = " ".join(prompt_parts).strip()
-        else:
-            tokens = rest.split(maxsplit=1)
-            aliases = [tokens[0].lower()] if tokens and tokens[0].lower() in available else []
-            prompt = tokens[1].strip() if len(tokens) > 1 else ""
+        # Space form selects one alias and preserves the full natural-language
+        # tail. Colon form can select several known aliases, but stops consuming
+        # as soon as a non-alias segment appears, preserving all later colons in
+        # the prompt (e.g. `translate:review:标题：正文`).
+        first = re.match(r"^([^\s:：]+)(.*)$", rest, flags=re.S)
+        first_alias = first.group(1).lower() if first else ""
+        remainder = first.group(2) if first else ""
+        aliases = [first_alias] if first_alias in available else []
+        if remainder.lstrip().startswith((":", "：")) and aliases:
+            remainder = remainder.lstrip()
+            while remainder.startswith((":", "：")):
+                tail = remainder[1:].lstrip()
+                next_part = re.match(r"^([^\s:：]+)(.*)$", tail, flags=re.S)
+                if not next_part or next_part.group(1).lower() not in available:
+                    # This separator begins the literal prompt, not another alias.
+                    remainder = tail
+                    break
+                aliases.append(next_part.group(1).lower())
+                remainder = next_part.group(2).lstrip()
+                if not remainder.startswith((":", "：")):
+                    break
+        prompt = remainder.strip()
+        if not prompt and not aliases:
+            # Preserve a useful error for malformed input.
+            prompt = ""
         if not aliases:
             return None, None, "Specify a valid skill alias after /add."
         if not prompt:
@@ -800,6 +857,25 @@ class MainSearchHandler(SearchHandler):
             command_results = await plugin.command_results(raw)
             if command_results is not None:
                 return command_results
+
+        if command == "/stop":
+            stopped = plugin.stop_stream()
+            return Result(
+                "Stop requested",
+                "Generation cancelled." if stopped else "No generation is currently active.",
+                icon=STOP_ICON,
+            )
+        if command == "/clear":
+            plugin.clear_last_answer()
+            return Result("Cleared", "Last answer history reset.", icon=CLEAR_ICON)
+        if command == "/last":
+            text = plugin._last_answer or "(nothing generated yet in this session)"
+            return AIResult(
+                "Last answer — Enter or Ctrl+C to copy",
+                text[:120] + ("…" if len(text) > 120 else ""),
+                copy_text=text,
+                icon=ANSWER_ICON,
+            )
 
         if not _is_configured(plugin):
             return Result(
