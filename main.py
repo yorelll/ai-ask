@@ -636,9 +636,12 @@ class AIAskPlugin(Plugin):
                 )
             return text
         except asyncio.CancelledError:
-            # Producer is a daemon thread and watches _stop_event. It may still
-            # be unwinding urlopen/read while the Python_v2 task is cancelled.
-            self._stop_event.set()
+            # Only a still-current task may re-arm its producer's stop signal.
+            # A superseded task is cancelled after start_stream() has already
+            # cleared the shared event for the new generation; setting it here
+            # would immediately kill that new request.
+            if self._stream_task is asyncio.current_task() and self._stream_generation == generation:
+                self._stop_event.set()
             return text
         except Exception as error:
             if self._is_current_generation(generation):
