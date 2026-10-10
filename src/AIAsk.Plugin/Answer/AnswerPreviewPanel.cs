@@ -1,7 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Documents;
-using System.Windows.Input;
+using Flow.Launcher.Plugin;
 
 namespace AIAsk.Plugin.Answer;
 
@@ -98,5 +97,41 @@ public sealed class AnswerPreviewPanelFactory
         var panel = new AnswerPreviewPanel();
         panel.Update(snapshot);
         return panel;
+    }
+
+    /// <summary>
+    /// Creates the exact shape expected by <see cref="Result.PreviewPanel"/>.
+    /// The shell can assign this directly:
+    /// <code>result.PreviewPanel = factory.CreateLazy(session.Snapshot());</code>
+    /// </summary>
+    public Lazy<UserControl> CreateLazy(AnswerSessionSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        return new Lazy<UserControl>(() => Create(snapshot));
+    }
+
+    /// <summary>
+    /// Creates a live preview that follows future session snapshots. The event
+    /// is marshalled to the WPF dispatcher before controls are updated.
+    /// </summary>
+    public Lazy<UserControl> CreateLive(AnswerSession session)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        return new Lazy<UserControl>(() =>
+        {
+            var panel = Create(session.Snapshot());
+            session.Changed += (_, snapshot) =>
+            {
+                if (panel.Dispatcher.CheckAccess())
+                {
+                    panel.Update(snapshot);
+                }
+                else
+                {
+                    _ = panel.Dispatcher.BeginInvoke(() => panel.Update(snapshot));
+                }
+            };
+            return panel;
+        });
     }
 }

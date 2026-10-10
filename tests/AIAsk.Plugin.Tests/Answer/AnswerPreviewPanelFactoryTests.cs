@@ -1,4 +1,5 @@
 using System.Threading;
+using System.Windows.Controls;
 using AIAsk.Plugin.Answer;
 using Xunit;
 
@@ -20,6 +21,27 @@ public sealed class AnswerPreviewPanelFactoryTests
         var answer = RunOnSta(() => new AnswerPreviewPanelFactory().Create(snapshot).AnswerText);
 
         Assert.Equal("complete answer", answer);
+    }
+
+    [Fact]
+    public void CreateLazy_ReturnsNativePreviewPanel()
+    {
+        var snapshot = new AnswerSessionSnapshot(
+            Generation: 1,
+            State: AnswerSessionState.Completed,
+            Prompt: "question",
+            Answer: "copy this answer",
+            Summary: "copy this answer",
+            ErrorMessage: null);
+
+        var answer = RunOnSta(() =>
+        {
+            Lazy<UserControl> preview = new AnswerPreviewPanelFactory().CreateLazy(snapshot);
+            var panel = Assert.IsType<AnswerPreviewPanel>(preview.Value);
+            return panel.AnswerText;
+        });
+
+        Assert.Equal("copy this answer", answer);
     }
 
     [Fact]
