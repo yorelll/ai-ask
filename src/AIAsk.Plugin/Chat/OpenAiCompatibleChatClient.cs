@@ -184,7 +184,7 @@ public sealed class OpenAiCompatibleChatClient
         {
             foreach (var (name, value) in request.ExtraHeaders)
             {
-                if (IsValidHeaderName(name) && IsAscii(value))
+                if (IsValidHeaderName(name) && IsSafeHeaderValue(value))
                 {
                     message.Headers.TryAddWithoutValidation(name, value);
                 }
@@ -234,7 +234,21 @@ public sealed class OpenAiCompatibleChatClient
         }
     }
 
-    private static bool IsAscii(string value) => value.All(character => character <= 0x7F);
+    private static bool IsSafeHeaderValue(string value)
+    {
+        foreach (var character in value)
+        {
+            // RFC field values cannot contain C0 controls or DEL. Keep header
+            // values ASCII-only so this client never transports untrusted CJK
+            // skills in a protocol header either.
+            if (character is < ' ' or >= '\x7F')
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
 
     private static bool IsValidHeaderName(string name)
     {
