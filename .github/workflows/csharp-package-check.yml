@@ -46,7 +46,7 @@ jobs:
         run: |
           $stage = Join-Path $env:RUNNER_TEMP "AIAsk.Native.CSharp"
           New-Item -ItemType Directory -Path $stage | Out-Null
-          Copy-Item "src/AIAsk.Plugin/bin/Release/net9.0-windows10.0.19041.0/*" $stage -Recurse -Force
+          Copy-Item "src/AIAsk.Plugin/bin/Release/*" $stage -Recurse -Force
           Copy-Item "src/AIAsk.Plugin/plugin.json" (Join-Path $stage "plugin.json") -Force
           Copy-Item "Images" (Join-Path $stage "Images") -Recurse -Force
           "stage=$stage" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8

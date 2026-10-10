@@ -68,7 +68,8 @@ jobs:
           Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Path $stage | Out-Null
 
-          $output = "src/AIAsk.Plugin/bin/Release/net9.0-windows10.0.19041.0"
+          # Directory.Build.props disables the target-framework output suffix.
+          $output = "src/AIAsk.Plugin/bin/Release"
           if (-not (Test-Path $output)) {
             Write-Error "Expected build output directory '$output' was not found."
             exit 1
