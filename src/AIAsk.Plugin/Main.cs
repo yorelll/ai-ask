@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
+using System.IO;
 using System.Net.Http;
+using System.Text;
 using AIAsk.Plugin.Answer;
 using AIAsk.Plugin.Chat;
 using AIAsk.Plugin.Skills;
@@ -84,7 +86,11 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated
                 AnswerIcon,
                 _ => CopyCurrentAnswer(hideAfterAction: false)),
             CreateActionResult("Stop generation", "Cancel the active AI request", StopIcon, _ => StopActiveGeneration()),
-            CreateActionResult("Clear answer", "Clear the current answer session", ClearIcon, _ => ClearAnswer())
+            CreateActionResult("Clear answer", "Clear the current answer session", ClearIcon, _ =>
+            {
+                ClearAnswer();
+                return false;
+            })
         ];
     }
 
