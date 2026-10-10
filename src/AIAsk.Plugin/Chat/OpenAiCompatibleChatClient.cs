@@ -1,3 +1,4 @@
+using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -58,17 +59,54 @@ public sealed class OpenAiCompatibleChatClient
                 throw ToChatException(response.StatusCode);
             }
 
+            Stream stream;
             try
             {
-                await using var stream = await response.Content
-                    .ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-                using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+                stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (OperationCanceledException)
+            {
+                throw new ChatClientException(ChatFailureKind.Timeout);
+            }
+            catch (HttpRequestException)
+            {
+                throw new ChatClientException(ChatFailureKind.Connection);
+            }
 
-                while (!reader.EndOfStream)
+            await using (stream)
+            using (var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true))
+            {
+                while (true)
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
-                    if (line is null || !line.StartsWith("data:", StringComparison.Ordinal))
+                    string? line;
+                    try
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw new ChatClientException(ChatFailureKind.Timeout);
+                    }
+                    catch (IOException)
+                    {
+                        throw new ChatClientException(ChatFailureKind.Connection);
+                    }
+
+                    if (line is null)
+                    {
+                        yield break;
+                    }
+
+                    if (!line.StartsWith("data:", StringComparison.Ordinal))
                     {
                         continue;
                     }
@@ -84,22 +122,6 @@ public sealed class OpenAiCompatibleChatClient
                         yield return content;
                     }
                 }
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (OperationCanceledException)
-            {
-                throw new ChatClientException(ChatFailureKind.Timeout);
-            }
-            catch (HttpRequestException)
-            {
-                throw new ChatClientException(ChatFailureKind.Connection);
-            }
-            catch (IOException)
-            {
-                throw new ChatClientException(ChatFailureKind.Connection);
             }
         }
     }
