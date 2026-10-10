@@ -14,6 +14,7 @@ public sealed record ChatRequest(
     string Model,
     IReadOnlyList<ChatMessage> Messages,
     int MaxTokens = 100_000,
+    TimeSpan? Timeout = null,
     IReadOnlyDictionary<string, string>? ExtraHeaders = null);
 
 public enum ChatFailureKind

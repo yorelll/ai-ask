@@ -103,6 +103,48 @@ public sealed class OpenAiCompatibleChatClientTests
     }
 
     [Fact]
+    public async Task StreamAsync_RejectsInvalidHeaderNamesAndKeepsValidAsciiHeaders()
+    {
+        var handler = new StubHandler((request, _) =>
+        {
+            Assert.Equal("ok", request.Headers.GetValues("X-Skill-1").Single());
+            Assert.False(request.Headers.Contains("Bad Header"));
+            Assert.False(request.Headers.Contains("X-Newline"));
+            return Task.FromResult(SseResponse("data: [DONE]\n\n"));
+        });
+        using var httpClient = new HttpClient(handler);
+        var client = new OpenAiCompatibleChatClient(httpClient);
+        var request = Request(extraHeaders: new Dictionary<string, string>
+        {
+            ["X-Skill-1"] = "ok",
+            ["Bad Header"] = "bad",
+            ["X-Newline\r\nInjected"] = "bad"
+        });
+
+        var chunks = await CollectAsync(client.StreamAsync(request));
+
+        Assert.Empty(chunks);
+    }
+
+    [Fact]
+    public async Task StreamAsync_MapsConfiguredTimeoutToSafeException()
+    {
+        var handler = new StubHandler(async (_, cancellationToken) =>
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return SseResponse(string.Empty);
+        });
+        using var httpClient = new HttpClient(handler);
+        var client = new OpenAiCompatibleChatClient(httpClient);
+        var request = Request(timeout: TimeSpan.FromMilliseconds(20));
+
+        var exception = await Assert.ThrowsAsync<ChatClientException>(
+            async () => await CollectAsync(client.StreamAsync(request)));
+
+        Assert.Equal(ChatFailureKind.Timeout, exception.Kind);
+    }
+
+    [Fact]
     public void TryReadContentDelta_IgnoresMalformedOrNonContentEvents()
     {
         Assert.False(OpenAiCompatibleChatClient.TryReadContentDelta("{", out _));
@@ -113,11 +155,13 @@ public sealed class OpenAiCompatibleChatClientTests
     }
 
     private static ChatRequest Request(
-        IReadOnlyDictionary<string, string>? extraHeaders = null) => new(
+        IReadOnlyDictionary<string, string>? extraHeaders = null,
+        TimeSpan? timeout = null) => new(
             "https://example.test/v1/",
             "secret",
             "fast",
             [new ChatMessage("user", "hello")],
+            Timeout: timeout,
             ExtraHeaders: extraHeaders);
 
     private static HttpResponseMessage SseResponse(string body) => new(HttpStatusCode.OK)

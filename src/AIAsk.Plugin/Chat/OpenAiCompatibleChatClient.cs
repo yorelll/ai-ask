@@ -29,6 +29,8 @@ public sealed class OpenAiCompatibleChatClient
         ArgumentNullException.ThrowIfNull(request);
         ValidateRequest(request);
 
+        using var requestTimeout = CreateTimeoutSource(request.Timeout, cancellationToken);
+        var effectiveToken = requestTimeout?.Token ?? cancellationToken;
         using var message = CreateRequestMessage(request);
         HttpResponseMessage response;
 
@@ -37,7 +39,7 @@ public sealed class OpenAiCompatibleChatClient
             response = await _httpClient.SendAsync(
                 message,
                 HttpCompletionOption.ResponseHeadersRead,
-                cancellationToken).ConfigureAwait(false);
+                effectiveToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -62,7 +64,7 @@ public sealed class OpenAiCompatibleChatClient
             Stream stream;
             try
             {
-                stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+                stream = await response.Content.ReadAsStreamAsync(effectiveToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -85,8 +87,8 @@ public sealed class OpenAiCompatibleChatClient
                     string? line;
                     try
                     {
-                        cancellationToken.ThrowIfCancellationRequested();
-                        line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+                        effectiveToken.ThrowIfCancellationRequested();
+                        line = await reader.ReadLineAsync(effectiveToken).ConfigureAwait(false);
                     }
                     catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                     {
@@ -182,7 +184,7 @@ public sealed class OpenAiCompatibleChatClient
         {
             foreach (var (name, value) in request.ExtraHeaders)
             {
-                if (IsAscii(value))
+                if (IsValidHeaderName(name) && IsAscii(value))
                 {
                     message.Headers.TryAddWithoutValidation(name, value);
                 }
@@ -190,6 +192,18 @@ public sealed class OpenAiCompatibleChatClient
         }
 
         return message;
+    }
+
+    private static CancellationTokenSource? CreateTimeoutSource(TimeSpan? timeout, CancellationToken cancellationToken)
+    {
+        if (timeout is null)
+        {
+            return null;
+        }
+
+        var source = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        source.CancelAfter(timeout.Value);
+        return source;
     }
 
     private static void ValidateRequest(ChatRequest request)
@@ -213,9 +227,35 @@ public sealed class OpenAiCompatibleChatClient
         {
             throw new ArgumentException("At least one message is required.", nameof(request));
         }
+
+        if (request.Timeout is { } timeout && timeout <= TimeSpan.Zero)
+        {
+            throw new ArgumentException("Timeout must be greater than zero.", nameof(request));
+        }
     }
 
     private static bool IsAscii(string value) => value.All(character => character <= 0x7F);
+
+    private static bool IsValidHeaderName(string name)
+    {
+        if (string.IsNullOrEmpty(name))
+        {
+            return false;
+        }
+
+        foreach (var character in name)
+        {
+            var isTokenCharacter = char.IsAsciiLetterOrDigit(character)
+                || character is '!' or '#' or '$' or '%' or '&' or '\'' or '*' or '+'
+                or '-' or '.' or '^' or '_' or '`' or '|' or '~';
+            if (!isTokenCharacter)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
 
     private static ChatClientException ToChatException(HttpStatusCode statusCode) => statusCode switch
     {
