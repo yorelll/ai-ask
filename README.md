@@ -16,7 +16,7 @@ C:\Users\lawrence_lv\AppData\Local\Programs\Python\Python312\pythonw.exe
 The JSON-RPC connection with the remote party was lost before the request could complete.
 ```
 
-`v0.0.2` 起改用**仅 Python 标准库**实现 HTTP/SSE 流式请求；不再依赖 CPython ABI 绑定的 `openai`、`pydantic_core` 或 `jiter`。它支持 **64-bit CPython 3.11+**，包括 Flow 内置 Python 3.11.4 与用户的 Python 3.12。
+修复版 `v0.0.1` 改用**仅 Python 标准库**实现 HTTP/SSE 流式请求；不再依赖 CPython ABI 绑定的 `openai`、`pydantic_core` 或 `jiter`。它支持 **64-bit CPython 3.11+**，包括 Flow 内置 Python 3.11.4 与用户的 Python 3.12。
 
 ## 功能
 
