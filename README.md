@@ -177,7 +177,7 @@ ai /add review 请检查这段代码
 
 | 输入 | 行为 |
 |---|---|
-| `ai <问题>` | 显示 Generate response；按 Enter 或点击才发送并开始流式回答；第一项 `Copy full answer` 可 Enter 复制完整回答，第二项仅显示单行摘要，点击不会关闭 Flow |
+| `ai <问题>` | 显示 Generate response；按 Enter 或点击才发送并开始流式回答；第一项 `Copy full answer` 可 Enter 复制完整回答，第二项 `Answer ready` 可 Enter 打开可选择/部分复制的完整回答页 |
 | `ai /stop` | 取消当前生成 |
 | `ai /clear` | 清空当前 session 最近回答并停止生成 |
 | `ai /last` | 显示最近回答；Enter 或 `Ctrl+C` 复制 |
@@ -190,6 +190,6 @@ ai /add review 请检查这段代码
 
 - `Language: python_v2`：长驻插件进程，NewLineDelimited JSON-RPC。
 - HTTP：标准库 `urllib.request` + SSE parser，后台线程生产 chunk、async queue 消费；无 CPython ABI 绑定第三方网络 SDK。
-- 流式：标准库 SSE parser 每 6 个 chunk 刷新一次。Flow 2.1.x 会丢弃 Python_v2 `UpdateResults`，因此插件通过保留的 `ai` / `ai /add <skill>` 输入进行受控 requery 来刷新结果；内部路由不会显示给用户。
+- 流式：标准库 SSE parser 每 6 个 chunk 刷新一次。Flow 2.1.x 会丢弃 Python_v2 `UpdateResults`，因此插件通过保留的 `ai` / `ai /add <skill>` 输入进行受控 requery 来刷新结果；内部路由不会显示给用户。第二项摘要可打开仅本机的完整回答页，允许鼠标选择任意片段并复制。
 - Skill UI：标准库 `ThreadingHTTPServer` 仅监听 `127.0.0.1`，浏览器管理页面无外网暴露。
 - 打包：GitHub Action 将纯 Python 依赖装入 `lib/`，Release 可直接复制进 Plugins 目录。

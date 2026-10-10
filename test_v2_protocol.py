@@ -38,6 +38,7 @@ class FlowSim:
         self.updated_results: list[dict] = []
         self.change_queries: list[str] = []
         self.clipboard_requests: list[list] = []
+        self.open_urls: list[str] = []
         self.writer_lock = asyncio.Lock()
 
     async def start(self):
@@ -81,6 +82,8 @@ class FlowSim:
                     self.change_queries.append(message["params"][0])
                 elif message["method"] == "CopyToClipboard":
                     self.clipboard_requests.append(message["params"])
+                elif message["method"] == "OpenUrl":
+                    self.open_urls.append(message["params"][0])
                 await self.send({"jsonrpc": "2.0", "id": message["id"], "result": None})
             elif "id" in message and ("result" in message or "error" in message):
                 future = self.pending.pop(message["id"], None)
@@ -180,6 +183,16 @@ async def main() -> int:
         assert displayed[0].get("title") == "Copy full answer"
         assert displayed[1].get("title") == "Answer ready"
         assert "stdlib_ok" in displayed[1].get("subTitle", "").lower()
+
+        # Summary opens a selectable full-answer page but keeps Flow visible.
+        summary_action = displayed[1]["jsonRPCAction"]
+        summary_response = await sim.request(summary_action["method"], summary_action.get("parameters", []))
+        assert summary_response.get("result", {}).get("hide") is False
+        assert sim.open_urls and sim.open_urls[-1].endswith("/answer")
+        import urllib.request
+        answer_data = json.loads(urllib.request.urlopen(sim.open_urls[-1].rsplit("/", 1)[0] + "/api/answer").read())
+        assert "stdlib_ok" in answer_data["answer"].lower()
+
         copy_result = displayed[0]
         action = copy_result["jsonRPCAction"]
         action_response = await sim.request(action["method"], action.get("parameters", []))
