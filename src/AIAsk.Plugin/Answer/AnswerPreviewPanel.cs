@@ -14,9 +14,11 @@ public sealed class AnswerPreviewPanel : UserControl
     private readonly TextBox _answerTextBox;
     private readonly TextBlock _statusTextBlock;
     private readonly Button _copyAllButton;
+    private readonly IAnswerClipboard _clipboard;
 
-    public AnswerPreviewPanel()
+    public AnswerPreviewPanel(IAnswerClipboard? clipboard = null)
     {
+        _clipboard = clipboard ?? new WpfAnswerClipboard();
         _statusTextBlock = new TextBlock
         {
             Margin = new Thickness(0, 0, 0, 8),
@@ -78,10 +80,7 @@ public sealed class AnswerPreviewPanel : UserControl
     /// <summary>Copies the full answer. Partial selection uses WPF Ctrl+C.</summary>
     public void CopyAll()
     {
-        if (!string.IsNullOrEmpty(_answerTextBox.Text))
-        {
-            Clipboard.SetText(_answerTextBox.Text);
-        }
+        _ = _clipboard.TryCopy(_answerTextBox.Text);
     }
 }
 
@@ -92,9 +91,9 @@ public sealed class AnswerPreviewPanel : UserControl
 /// </summary>
 public sealed class AnswerPreviewPanelFactory
 {
-    public AnswerPreviewPanel Create(AnswerSessionSnapshot snapshot)
+    public AnswerPreviewPanel Create(AnswerSessionSnapshot snapshot, IAnswerClipboard? clipboard = null)
     {
-        var panel = new AnswerPreviewPanel();
+        var panel = new AnswerPreviewPanel(clipboard);
         panel.Update(snapshot);
         return panel;
     }
@@ -120,8 +119,15 @@ public sealed class AnswerPreviewPanelFactory
         return new Lazy<UserControl>(() =>
         {
             var panel = Create(session.Snapshot());
-            session.Changed += (_, snapshot) =>
+            EventHandler<AnswerSessionSnapshot>? handler = null;
+            handler = (_, snapshot) =>
             {
+                if (panel.Dispatcher.HasShutdownStarted || panel.Dispatcher.HasShutdownFinished)
+                {
+                    session.Changed -= handler;
+                    return;
+                }
+
                 if (panel.Dispatcher.CheckAccess())
                 {
                     panel.Update(snapshot);
@@ -131,6 +137,8 @@ public sealed class AnswerPreviewPanelFactory
                     _ = panel.Dispatcher.BeginInvoke(() => panel.Update(snapshot));
                 }
             };
+            session.Changed += handler;
+            panel.Unloaded += (_, _) => session.Changed -= handler;
             return panel;
         });
     }
