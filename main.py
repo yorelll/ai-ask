@@ -459,6 +459,12 @@ class AIAskPlugin(Plugin):
         self._stream_task: asyncio.Task | None = None
         self._stream_generation = 0
         self._last_answer = ""
+        # Flow 2.1.x drops Python_v2 UpdateResults at the UI layer. Keep the
+        # current display keyed by the query text we push through ChangeQuery;
+        # the subsequent normal query returns this cached result list.
+        self._display_generation = -1
+        self._display_key = ""
+        self._display_results: list[Result] = []
         # UI HTTP handlers run in another thread; command and UI updates must
         # serialize their load-modify-save cycle against the shared skills.json.
         self._skills_lock = threading.RLock()
@@ -541,6 +547,9 @@ class AIAskPlugin(Plugin):
     def clear_last_answer(self) -> None:
         self.stop_stream()
         self._last_answer = ""
+        self._display_generation = -1
+        self._display_key = ""
+        self._display_results = []
 
     def stop_stream(self) -> bool:
         self._stream_generation += 1
@@ -568,21 +577,45 @@ class AIAskPlugin(Plugin):
                     self._stream_task = None
                     self._stop_event.clear()
 
+        # Clear an old cached display before this generation first refreshes.
+        self._display_generation = -1
+        self._display_key = ""
+        self._display_results = []
         self._stream_task = asyncio.create_task(run(), name="aiask-stream")
 
     def _is_current_generation(self, generation: int) -> bool:
         return self._stream_generation == generation and not self._stop_event.is_set()
 
-    async def _update_results(self, query: Query, results: list[Result], generation: int) -> bool:
+    def _stream_query_key(self, generation: int) -> str:
+        return f"ai /stream {generation}"
+
+    def _set_display(self, generation: int, results: list[Result]) -> bool:
         if not self._is_current_generation(generation):
             return False
+        self._display_generation = generation
+        self._display_key = self._stream_query_key(generation)
+        self._display_results = results
+        return True
+
+    async def _refresh_display(self, generation: int, results: list[Result]) -> bool:
+        """Display stream results through real Flow query routing.
+
+        Flow 2.1.x drops Python_v2 UpdateResults due to an upstream
+        OriginalQuery mismatch. ChangeQuery triggers Flow's ordinary query path;
+        the /stream cache branch below returns the current result list.
+        """
+        if not self._set_display(generation, results):
+            return False
         try:
-            await query.update_results(results)
+            # `requery=True` is essential after the first refresh: the query
+            # text remains `ai /stream <generation>`, so Flow otherwise would
+            # see an unchanged text box and skip rendering later chunks.
+            response = await self.api.change_query(self._display_key, True)
+            return not isinstance(response, ErrorResponse) and self._is_current_generation(generation)
         except Exception:
             if self._is_current_generation(generation):
                 self.stop_stream()
             return False
-        return self._is_current_generation(generation)
 
     async def stream_answer(
         self, query: Query, prompt: str, selected_skills: list[dict], generation: int
@@ -638,17 +671,16 @@ class AIAskPlugin(Plugin):
                 text += value
                 chunks_since_update += 1
                 if chunks_since_update >= 6:
-                    if not await self._update_results(
-                        query,
-                        [AIResult("Generating…", text, copy_text=text, icon=GENERATING_ICON)],
+                    if not await self._refresh_display(
                         generation,
+                        [AIResult("Generating…", text, copy_text=text, icon=GENERATING_ICON)],
                     ):
                         return text
                     chunks_since_update = 0
 
             if text and self._is_current_generation(generation):
-                await self._update_results(
-                    query,
+                await self._refresh_display(
+                    generation,
                     [
                         AIResult(
                             "Answer ready — Enter or Ctrl+C to copy",
@@ -657,7 +689,6 @@ class AIAskPlugin(Plugin):
                             icon=ANSWER_ICON,
                         )
                     ],
-                    generation,
                 )
             return text
         except asyncio.CancelledError:
@@ -681,7 +712,7 @@ class AIAskPlugin(Plugin):
                         )
                     )
                 results.append(Result("AI Ask error", _friendly_error(error), icon=ERROR_ICON))
-                await self._update_results(query, results, generation)
+                await self._refresh_display(generation, results)
             return text
 
     # -- Commands ------------------------------------------------------------
@@ -858,6 +889,16 @@ class MainSearchHandler(SearchHandler):
         # QueryBuilder may leave a leading separator in the search text for
         # forms such as `ai : /add : translate : question`.
         raw = query.text.strip().lstrip(" \t:：")
+
+        # Streaming refreshes route through `ai /stream <generation>`. This is
+        # an ordinary non-global query, so Flow 2.1.x renders the cached result
+        # list rather than silently dropping Python_v2 UpdateResults.
+        stream_match = re.match(r"^/stream\s+(\d+)\s*$", raw, flags=re.I)
+        if query.keyword == "ai" and stream_match:
+            generation = int(stream_match.group(1))
+            if generation == plugin._display_generation:
+                return plugin._display_results
+            return []
 
         # The wildcard keyword exists solely to normalize `ai:/add...` and
         # `ai：/add...`, which Flow otherwise routes as a non-keyword query.

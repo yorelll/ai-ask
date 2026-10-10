@@ -35,6 +35,7 @@ class FlowSim:
         self.request_id = 0
         self.pending: dict[int, asyncio.Future] = {}
         self.updated_results: list[dict] = []
+        self.change_queries: list[str] = []
         self.clipboard_requests: list[list] = []
         self.writer_lock = asyncio.Lock()
 
@@ -75,6 +76,8 @@ class FlowSim:
             if "method" in message and "id" in message:
                 if message["method"] == "UpdateResults":
                     self.updated_results.append(message["params"][1])
+                elif message["method"] == "ChangeQuery":
+                    self.change_queries.append(message["params"][0])
                 elif message["method"] == "CopyToClipboard":
                     self.clipboard_requests.append(message["params"])
                 await self.send({"jsonrpc": "2.0", "id": message["id"], "result": None})
@@ -121,16 +124,32 @@ async def main() -> int:
         send_response = await sim.request(send_action["method"], send_action.get("parameters", []))
         assert send_response.get("result", {}).get("hide") is False
 
+        displayed = []
         for _ in range(16):
             await asyncio.sleep(5)
-            if sim.updated_results:
+            if not sim.change_queries:
+                continue
+            assert sim.change_queries[-1].startswith("ai /stream ")
+            # Simulate Flow's ordinary query routing after ChangeQuery. This is
+            # the production workaround for Flow 2.1.x dropping V2 UpdateResults.
+            stream_query = {
+                "search": sim.change_queries[-1].removeprefix("ai "),
+                "rawQuery": sim.change_queries[-1],
+                "isReQuery": True,
+                "actionKeyword": "ai",
+            }
+            display_response = await sim.request("query", [stream_query, SETTINGS], timeout=30)
+            displayed = display_response.get("result", {}).get("result") or []
+            rendered = json.dumps(displayed, ensure_ascii=False).lower()
+            if "stdlib_ok" in rendered:
                 break
-        rendered = json.dumps(sim.updated_results, ensure_ascii=False).lower()
-        assert sim.updated_results, "no streamed UpdateResults frame received after activation"
+        assert sim.change_queries, "no ChangeQuery stream refresh received after activation"
+        rendered = json.dumps(displayed, ensure_ascii=False).lower()
+        assert displayed, "stream refresh query returned no results"
         assert "stdlib_ok" in rendered, "stdlib SSE response missing expected answer"
         assert "error" not in rendered, "stream produced an error result"
 
-        final = sim.updated_results[-1]["result"][0]
+        final = displayed[0]
         action = final["jsonRPCAction"]
         action_response = await sim.request(action["method"], action.get("parameters", []))
         assert action_response.get("result", {}).get("hide") is True
