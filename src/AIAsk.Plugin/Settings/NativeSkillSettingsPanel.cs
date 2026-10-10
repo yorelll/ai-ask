@@ -7,20 +7,32 @@ using Microsoft.Win32;
 namespace AIAsk.Plugin.Settings;
 
 /// <summary>
-/// Native Flow settings control modeled after the project's reference images:
-/// a DataGrid listing alias/path/global/status plus Add, Edit, and Delete.
-/// The plugin shell should expose it from ISettingProvider.CreateSettingPanel.
+/// Root Flow-native settings panel. It persists API controls using
+/// IPluginSettingsAccessor and hosts the dynamic WPF skill DataGrid.
+/// Main.CreateSettingPanel should construct this control through Create().
 /// </summary>
 public sealed class NativeSkillSettingsPanel : UserControl
 {
-    private readonly SkillSettingsController _controller;
+    private readonly SkillSettingsController _skillController;
+    private readonly IPluginSettingsAccessor _pluginSettings;
     private readonly ObservableCollection<SkillSettingsRow> _rows = [];
     private readonly DataGrid _grid;
     private readonly TextBlock _error;
+    private readonly TextBox _baseUrl;
+    private readonly PasswordBox _apiKey;
+    private readonly TextBox _model;
+    private readonly TextBox _maxTokens;
+    private readonly TextBox _timeout;
 
-    public NativeSkillSettingsPanel(SkillSettingsController controller)
+    public NativeSkillSettingsPanel(
+        SkillSettingsController skillController,
+        IPluginSettingsAccessor pluginSettings)
     {
-        _controller = controller ?? throw new ArgumentNullException(nameof(controller));
+        _skillController = skillController ?? throw new ArgumentNullException(nameof(skillController));
+        _pluginSettings = pluginSettings ?? throw new ArgumentNullException(nameof(pluginSettings));
+
+        var settings = _pluginSettings.Current;
+        FlowPluginSettingsAccessor.Normalize(settings);
 
         var root = new DockPanel { Margin = new Thickness(12) };
         _error = new TextBlock
@@ -31,6 +43,20 @@ public sealed class NativeSkillSettingsPanel : UserControl
         };
         DockPanel.SetDock(_error, Dock.Top);
         root.Children.Add(_error);
+
+        var apiPanel = CreateApiPanel(settings);
+        DockPanel.SetDock(apiPanel, Dock.Top);
+        root.Children.Add(apiPanel);
+
+        var skillHeader = new TextBlock
+        {
+            Text = "Skills",
+            FontSize = 16,
+            FontWeight = FontWeights.SemiBold,
+            Margin = new Thickness(0, 16, 0, 6)
+        };
+        DockPanel.SetDock(skillHeader, Dock.Top);
+        root.Children.Add(skillHeader);
 
         var toolbar = new StackPanel
         {
@@ -44,63 +70,28 @@ public sealed class NativeSkillSettingsPanel : UserControl
         DockPanel.SetDock(toolbar, Dock.Bottom);
         root.Children.Add(toolbar);
 
-        _grid = new DataGrid
-        {
-            AutoGenerateColumns = false,
-            CanUserAddRows = false,
-            CanUserDeleteRows = false,
-            IsReadOnly = false,
-            ItemsSource = _rows,
-            SelectionMode = DataGridSelectionMode.Single,
-            MinHeight = 240
-        };
-        _grid.Columns.Add(new DataGridTextColumn
-        {
-            Header = "Alias",
-            Binding = new Binding(nameof(SkillSettingsRow.Alias)),
-            IsReadOnly = true,
-            Width = new DataGridLength(1, DataGridLengthUnitType.Star)
-        });
-        _grid.Columns.Add(new DataGridTextColumn
-        {
-            Header = "Path",
-            Binding = new Binding(nameof(SkillSettingsRow.Path)),
-            IsReadOnly = true,
-            Width = new DataGridLength(3, DataGridLengthUnitType.Star)
-        });
-        _grid.Columns.Add(new DataGridCheckBoxColumn
-        {
-            Header = "Global",
-            Binding = new Binding(nameof(SkillSettingsRow.IsGlobal))
-            {
-                Mode = BindingMode.TwoWay,
-                UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged
-            },
-            Width = DataGridLength.Auto
-        });
-        _grid.Columns.Add(new DataGridTextColumn
-        {
-            Header = "Status",
-            Binding = new Binding(nameof(SkillSettingsRow.Status)),
-            IsReadOnly = true,
-            Width = DataGridLength.Auto
-        });
-        _grid.CellEditEnding += OnCellEditEnding;
+        _grid = CreateGrid();
         root.Children.Add(_grid);
 
         Content = root;
-        Reload();
+        ReloadSkills();
     }
 
-    /// <summary>Factory used by the later ISettingProvider adapter.</summary>
-    public static UserControl Create(SkillSettingsController controller) => new NativeSkillSettingsPanel(controller);
+    /// <summary>
+    /// Public factory for Main.CreateSettingPanel. The shell must create the
+    /// FlowPluginSettingsAccessor from context.API during InitAsync.
+    /// </summary>
+    public static UserControl Create(
+        SkillSettingsController skillController,
+        IPluginSettingsAccessor pluginSettings) =>
+        new NativeSkillSettingsPanel(skillController, pluginSettings);
 
-    public void Reload()
+    public void ReloadSkills()
     {
         try
         {
             _rows.Clear();
-            foreach (var row in _controller.LoadRows())
+            foreach (var row in _skillController.LoadRows())
             {
                 _rows.Add(row);
             }
@@ -110,6 +101,77 @@ public sealed class NativeSkillSettingsPanel : UserControl
         {
             ShowError(exception.Message);
         }
+    }
+
+    private Grid CreateApiPanel(AIAskPluginSettings settings)
+    {
+        var grid = new Grid { Margin = new Thickness(0, 0, 0, 2) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(145) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        for (var index = 0; index < 5; index++)
+        {
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        }
+
+        _baseUrl = AddInput(grid, "Base URL", settings.BaseUrl, 0);
+        _apiKey = AddPassword(grid, "API Key", settings.ApiKey, 1);
+        _model = AddInput(grid, "Model", settings.Model, 2);
+        _maxTokens = AddInput(grid, "Max Token", settings.MaxTokens.ToString(), 3);
+        _timeout = AddInput(grid, "Timeout (seconds)", settings.TimeoutSeconds.ToString(), 4);
+
+        _baseUrl.LostFocus += (_, _) => SaveApiSettings();
+        _apiKey.LostFocus += (_, _) => SaveApiSettings();
+        _model.LostFocus += (_, _) => SaveApiSettings();
+        _maxTokens.LostFocus += (_, _) => SaveApiSettings();
+        _timeout.LostFocus += (_, _) => SaveApiSettings();
+        return grid;
+    }
+
+    private DataGrid CreateGrid()
+    {
+        var grid = new DataGrid
+        {
+            AutoGenerateColumns = false,
+            CanUserAddRows = false,
+            CanUserDeleteRows = false,
+            IsReadOnly = false,
+            ItemsSource = _rows,
+            SelectionMode = DataGridSelectionMode.Single,
+            MinHeight = 240
+        };
+        grid.Columns.Add(new DataGridTextColumn
+        {
+            Header = "Alias",
+            Binding = new Binding(nameof(SkillSettingsRow.Alias)),
+            IsReadOnly = true,
+            Width = new DataGridLength(1, DataGridLengthUnitType.Star)
+        });
+        grid.Columns.Add(new DataGridTextColumn
+        {
+            Header = "Path",
+            Binding = new Binding(nameof(SkillSettingsRow.Path)),
+            IsReadOnly = true,
+            Width = new DataGridLength(3, DataGridLengthUnitType.Star)
+        });
+        grid.Columns.Add(new DataGridCheckBoxColumn
+        {
+            Header = "Global",
+            Binding = new Binding(nameof(SkillSettingsRow.IsGlobal))
+            {
+                Mode = BindingMode.TwoWay,
+                UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged
+            },
+            Width = DataGridLength.Auto
+        });
+        grid.Columns.Add(new DataGridTextColumn
+        {
+            Header = "Status",
+            Binding = new Binding(nameof(SkillSettingsRow.Status)),
+            IsReadOnly = true,
+            Width = DataGridLength.Auto
+        });
+        grid.CellEditEnding += OnCellEditEnding;
+        return grid;
     }
 
     private void OnCellEditEnding(object? sender, DataGridCellEditEndingEventArgs args)
@@ -123,24 +185,47 @@ public sealed class NativeSkillSettingsPanel : UserControl
 
         Dispatcher.BeginInvoke(() =>
         {
-            var result = _controller.SetGlobal(row.Alias, row.IsGlobal);
+            var result = _skillController.SetGlobal(row.Alias, row.IsGlobal);
             if (!result.IsSuccess)
             {
                 ShowError(result.Error ?? "Unable to update global skill state.");
             }
-            Reload();
+            ReloadSkills();
         });
+    }
+
+    private void SaveApiSettings()
+    {
+        if (!int.TryParse(_maxTokens.Text, out var maxTokens) || maxTokens <= 0)
+        {
+            ShowError("Max Token must be a positive integer.");
+            return;
+        }
+        if (!int.TryParse(_timeout.Text, out var timeout) || timeout <= 0)
+        {
+            ShowError("Timeout must be a positive integer.");
+            return;
+        }
+
+        var settings = _pluginSettings.Current;
+        settings.BaseUrl = _baseUrl.Text;
+        settings.ApiKey = _apiKey.Password;
+        settings.Model = _model.Text;
+        settings.MaxTokens = maxTokens;
+        settings.TimeoutSeconds = timeout;
+        _pluginSettings.Save();
+        ClearError();
     }
 
     private void AddSkill()
     {
-        var dialog = new SkillEditorDialog(_controller, existing: null)
+        var dialog = new SkillEditorDialog(_skillController, existing: null)
         {
             Owner = Window.GetWindow(this)
         };
         if (dialog.ShowDialog() == true)
         {
-            Reload();
+            ReloadSkills();
         }
     }
 
@@ -152,13 +237,13 @@ public sealed class NativeSkillSettingsPanel : UserControl
             return;
         }
 
-        var dialog = new SkillEditorDialog(_controller, row)
+        var dialog = new SkillEditorDialog(_skillController, row)
         {
             Owner = Window.GetWindow(this)
         };
         if (dialog.ShowDialog() == true)
         {
-            Reload();
+            ReloadSkills();
         }
     }
 
@@ -175,25 +260,56 @@ public sealed class NativeSkillSettingsPanel : UserControl
             return;
         }
 
-        var result = _controller.Delete(row.Alias);
+        var result = _skillController.Delete(row.Alias);
         if (!result.IsSuccess)
         {
             ShowError(result.Error ?? "Unable to delete skill.");
             return;
         }
+        ReloadSkills();
+    }
 
-        Reload();
+    private static TextBox AddInput(Grid grid, string labelText, string value, int row)
+    {
+        var label = new TextBlock
+        {
+            Text = labelText,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 5, 12, 5)
+        };
+        Grid.SetRow(label, row);
+        Grid.SetColumn(label, 0);
+        grid.Children.Add(label);
+
+        var input = new TextBox { Text = value, Margin = new Thickness(0, 4, 0, 4), Padding = new Thickness(6, 4, 6, 4) };
+        Grid.SetRow(input, row);
+        Grid.SetColumn(input, 1);
+        grid.Children.Add(input);
+        return input;
+    }
+
+    private static PasswordBox AddPassword(Grid grid, string labelText, string value, int row)
+    {
+        var label = new TextBlock
+        {
+            Text = labelText,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 5, 12, 5)
+        };
+        Grid.SetRow(label, row);
+        Grid.SetColumn(label, 0);
+        grid.Children.Add(label);
+
+        var input = new PasswordBox { Password = value, Margin = new Thickness(0, 4, 0, 4), Padding = new Thickness(6, 4, 6, 4) };
+        Grid.SetRow(input, row);
+        Grid.SetColumn(input, 1);
+        grid.Children.Add(input);
+        return input;
     }
 
     private static Button CreateButton(string text, RoutedEventHandler action)
     {
-        var button = new Button
-        {
-            Content = text,
-            Margin = new Thickness(4, 0, 0, 0),
-            MinWidth = 84,
-            Padding = new Thickness(8, 4, 8, 4)
-        };
+        var button = new Button { Content = text, Margin = new Thickness(4, 0, 0, 0), MinWidth = 84, Padding = new Thickness(8, 4, 8, 4) };
         button.Click += action;
         return button;
     }
@@ -224,18 +340,16 @@ internal sealed class SkillEditorDialog : Window
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
 
         var grid = new Grid { Margin = new Thickness(22) };
-        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        for (var index = 0; index < 6; index++)
+        {
+            grid.RowDefinitions.Add(new RowDefinition { Height = index == 4 ? new GridLength(1, GridUnitType.Star) : GridLength.Auto });
+        }
 
         grid.Children.Add(Label("Alias", 0));
         _alias = Input(existing?.Alias ?? string.Empty, 1);
         grid.Children.Add(_alias);
-
         grid.Children.Add(Label("Skill file path", 2));
+
         var pathPanel = new DockPanel { LastChildFill = true };
         Grid.SetRow(pathPanel, 3);
         var browse = new Button { Content = "Browse…", Margin = new Thickness(8, 0, 0, 0), Padding = new Thickness(8, 4, 8, 4) };
@@ -249,7 +363,6 @@ internal sealed class SkillEditorDialog : Window
         _global = new CheckBox { Content = "Load globally as system prompt", IsChecked = existing?.IsGlobal ?? false, Margin = new Thickness(0, 12, 0, 0) };
         Grid.SetRow(_global, 4);
         grid.Children.Add(_global);
-
         _error = new TextBlock { Foreground = System.Windows.Media.Brushes.Firebrick, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 0) };
         Grid.SetRow(_error, 4);
         Grid.SetColumn(_error, 1);
@@ -263,7 +376,6 @@ internal sealed class SkillEditorDialog : Window
         footer.Children.Add(save);
         Grid.SetRow(footer, 5);
         grid.Children.Add(footer);
-
         Content = grid;
     }
 
@@ -300,7 +412,6 @@ internal sealed class SkillEditorDialog : Window
             _error.Text = result.Error ?? "Unable to save skill.";
             return;
         }
-
         DialogResult = true;
     }
 }
