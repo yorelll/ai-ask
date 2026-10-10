@@ -11,11 +11,14 @@ The native C# release must **never overwrite** the Python `v0.0.1` release.
 
 ## Triggering a native release
 
-The workflow `.github/workflows/csharp-release.yml` publishes only from:
+The workflow `.github/workflows/csharp-release.yml` publishes from:
 
 ```text
 csharp-v<version>
 ```
+
+A manual workflow run performs build/test/package validation by default. It only
+publishes if the operator explicitly sets its `publish` input to `true`.
 
 For example, when `src/AIAsk.Plugin/plugin.json` contains:
 

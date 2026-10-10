@@ -1,0 +1,70 @@
+name: Verify Native C# Package
+
+on:
+  push:
+    branches:
+      - feature/csharp-native
+      - csharp/**
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "scripts/verify-csharp-release.ps1"
+      - ".github/workflows/csharp-package-check.yml"
+      - "AIAsk.CSharp.sln"
+      - "Directory.Build.props"
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "scripts/verify-csharp-release.ps1"
+      - ".github/workflows/csharp-package-check.yml"
+      - "AIAsk.CSharp.sln"
+      - "Directory.Build.props"
+  workflow_dispatch:
+
+jobs:
+  package-check:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Restore, build, and test
+        run: |
+          dotnet restore AIAsk.CSharp.sln
+          dotnet build AIAsk.CSharp.sln --configuration Release --no-restore
+          dotnet test AIAsk.CSharp.sln --configuration Release --no-build
+
+      - name: Stage native C# plugin
+        id: stage
+        shell: pwsh
+        run: |
+          $stage = Join-Path $env:RUNNER_TEMP "AIAsk.Native.CSharp"
+          New-Item -ItemType Directory -Path $stage | Out-Null
+          Copy-Item "src/AIAsk.Plugin/bin/Release/net9.0-windows10.0.19041.0/*" $stage -Recurse -Force
+          Copy-Item "src/AIAsk.Plugin/plugin.json" (Join-Path $stage "plugin.json") -Force
+          Copy-Item "Images" (Join-Path $stage "Images") -Recurse -Force
+          "stage=$stage" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8
+
+      - name: Verify staged native artifact
+        shell: pwsh
+        run: |
+          $manifest = Get-Content "src/AIAsk.Plugin/plugin.json" -Raw | ConvertFrom-Json
+          ./scripts/verify-csharp-release.ps1 `
+            -StageDirectory "${{ steps.stage.outputs.stage }}" `
+            -ExpectedVersion "$($manifest.Version)"
+
+      - name: Archive checked artifact
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "${{ steps.stage.outputs.stage }}\*" -DestinationPath "AIAsk.Native.CSharp-package-check.zip" -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-csharp-package-check
+          path: AIAsk.Native.CSharp-package-check.zip
