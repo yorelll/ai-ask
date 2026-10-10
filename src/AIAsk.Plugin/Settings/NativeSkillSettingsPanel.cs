@@ -18,11 +18,11 @@ public sealed class NativeSkillSettingsPanel : UserControl
     private readonly ObservableCollection<SkillSettingsRow> _rows = [];
     private readonly DataGrid _grid;
     private readonly TextBlock _error;
-    private readonly TextBox _baseUrl;
-    private readonly PasswordBox _apiKey;
-    private readonly TextBox _model;
-    private readonly TextBox _maxTokens;
-    private readonly TextBox _timeout;
+    private TextBox _baseUrl = null!;
+    private PasswordBox _apiKey = null!;
+    private TextBox _model = null!;
+    private TextBox _maxTokens = null!;
+    private TextBox _timeout = null!;
 
     public NativeSkillSettingsPanel(
         SkillSettingsController skillController,
