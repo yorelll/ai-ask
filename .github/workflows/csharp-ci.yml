@@ -1,0 +1,53 @@
+name: C# CI
+
+on:
+  push:
+    branches:
+      - feature/csharp-native
+      - csharp/**
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "AIAsk.CSharp.sln"
+      - "Directory.Build.props"
+      - ".github/workflows/csharp-ci.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "AIAsk.CSharp.sln"
+      - "Directory.Build.props"
+      - ".github/workflows/csharp-ci.yml"
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: Build and test native plugin
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Restore
+        run: dotnet restore AIAsk.CSharp.sln
+
+      - name: Build
+        run: dotnet build AIAsk.CSharp.sln --configuration Release --no-restore
+
+      - name: Test
+        run: dotnet test AIAsk.CSharp.sln --configuration Release --no-build --logger "trx;LogFileName=results.trx"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: csharp-test-results
+          path: "**/TestResults/*.trx"
+          if-no-files-found: warn

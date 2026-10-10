@@ -1,0 +1,24 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AIAsk.Plugin", "src\AIAsk.Plugin\AIAsk.Plugin.csproj", "{9DFB4E14-4AD0-4B00-9275-05542A984707}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AIAsk.Plugin.Tests", "tests\AIAsk.Plugin.Tests\AIAsk.Plugin.Tests.csproj", "{C7826E59-9935-4DC9-A08E-A1D4CA440177}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{9DFB4E14-4AD0-4B00-9275-05542A984707}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9DFB4E14-4AD0-4B00-9275-05542A984707}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9DFB4E14-4AD0-4B00-9275-05542A984707}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9DFB4E14-4AD0-4B00-9275-05542A984707}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C7826E59-9935-4DC9-A08E-A1D4CA440177}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C7826E59-9935-4DC9-A08E-A1D4CA440177}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C7826E59-9935-4DC9-A08E-A1D4CA440177}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C7826E59-9935-4DC9-A08E-A1D4CA440177}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

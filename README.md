@@ -18,6 +18,10 @@ The JSON-RPC connection with the remote party was lost before the request could 
 
 修复版 `v0.0.1` 改用**仅 Python 标准库**实现 HTTP/SSE 流式请求；不再依赖 CPython ABI 绑定的 `openai`、`pydantic_core` 或 `jiter`。它支持 **64-bit CPython 3.11+**，包括 Flow 内置 Python 3.11.4 与用户的 Python 3.12。
 
+## C# 原生迁移分支
+
+C# 原生实现正在 `feature/csharp-native` 分支开发。该分支的 C# 构建和测试只通过 GitHub Actions 的 **C# CI** 验证；当前本地环境不具备 C# 编译工具。
+
 ## 功能
 
 - `ai <问题>`：先显示“Generate response”；按 Enter 或点击后才开始流式回答，避免用户仍在输入时提前发送；发送后输入框保留干净的 `ai` 或 `ai /add <skill>`。
