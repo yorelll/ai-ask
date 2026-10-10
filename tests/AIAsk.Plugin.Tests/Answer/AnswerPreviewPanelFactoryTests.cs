@@ -1,3 +1,4 @@
+using System.Threading;
 using AIAsk.Plugin.Answer;
 using Xunit;
 
@@ -16,7 +17,7 @@ public sealed class AnswerPreviewPanelFactoryTests
             Summary: "complete answer",
             ErrorMessage: null);
 
-        var panel = new AnswerPreviewPanelFactory().Create(snapshot);
+        var panel = RunOnSta(() => new AnswerPreviewPanelFactory().Create(snapshot));
 
         Assert.Equal("complete answer", panel.AnswerText);
     }
@@ -24,11 +25,41 @@ public sealed class AnswerPreviewPanelFactoryTests
     [Fact]
     public void Update_ReplacesAnswerText()
     {
-        var panel = new AnswerPreviewPanel();
+        var answer = RunOnSta(() =>
+        {
+            var panel = new AnswerPreviewPanel();
+            panel.Update("first", "Streaming");
+            panel.Update("final", "Completed");
+            return panel.AnswerText;
+        });
 
-        panel.Update("first", "Streaming");
-        panel.Update("final", "Completed");
+        Assert.Equal("final", answer);
+    }
 
-        Assert.Equal("final", panel.AnswerText);
+    private static T RunOnSta<T>(Func<T> callback)
+    {
+        T? result = default;
+        Exception? error = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                result = callback();
+            }
+            catch (Exception exception)
+            {
+                error = exception;
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+
+        if (error is not null)
+        {
+            throw error;
+        }
+
+        return result!;
     }
 }
