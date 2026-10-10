@@ -111,14 +111,22 @@ async def main() -> int:
         }
         response = await sim.request("query", [query, SETTINGS], timeout=120)
         initial = response.get("result", {}).get("result") or []
-        assert initial and initial[0]["title"] == "Generating…"
+        assert initial and initial[0]["title"] == "Generate response"
+        # No request may be sent merely because a query handler ran; this proves
+        # users can continue typing before deliberately activating the result.
+        await asyncio.sleep(1)
+        assert not sim.updated_results, "stream started before user activated Generate response"
+
+        send_action = initial[0]["jsonRPCAction"]
+        send_response = await sim.request(send_action["method"], send_action.get("parameters", []))
+        assert send_response.get("result", {}).get("hide") is False
 
         for _ in range(16):
             await asyncio.sleep(5)
             if sim.updated_results:
                 break
         rendered = json.dumps(sim.updated_results, ensure_ascii=False).lower()
-        assert sim.updated_results, "no streamed UpdateResults frame received"
+        assert sim.updated_results, "no streamed UpdateResults frame received after activation"
         assert "stdlib_ok" in rendered, "stdlib SSE response missing expected answer"
         assert "error" not in rendered, "stream produced an error result"
 

@@ -421,9 +421,34 @@ class AIResult(Result):
         return ExecuteResponse(hide=copied)
 
 
+class StartGenerationResult(Result):
+    """An explicit send action.
+
+    Flow invokes query handlers on every keystroke. Streaming must begin only
+    when the user presses Enter/clicks this result, not while they are still
+    composing their prompt.
+    """
+
+    def __init__(self, query: Query, prompt: str, selected_skills: list[dict], detail: str):
+        super().__init__(
+            title="Generate response",
+            sub=f"{detail} · Press Enter or click to send",
+            icon=GENERATING_ICON,
+        )
+        self._query = query
+        self._prompt = prompt
+        self._selected_skills = selected_skills
+
+    async def callback(self) -> ExecuteResponse:
+        if self.plugin is not None:
+            self.plugin.start_stream(self._query, self._prompt, self._selected_skills)
+        # Keep Flow visible so UpdateResults can replace this button with output.
+        return ExecuteResponse(hide=False)
+
+
 # ---------------------------------------------------------------------------
 # Plugin + search handler
-# ---------------------------------------------------------------------------
+
 
 class AIAskPlugin(Plugin):
     """Long-lived Python_v2 plugin with dual command/UI skill management."""
@@ -908,9 +933,8 @@ class MainSearchHandler(SearchHandler):
                 icon=ERROR_ICON,
             )
         selected = global_skills + (dynamic_skills or [])
-        plugin.start_stream(query, prompt, selected)
         detail = f"global: {len(global_skills)} · temporary: {len(dynamic_skills or [])}"
-        return Result("Generating…", detail, icon=GENERATING_ICON)
+        return StartGenerationResult(query, prompt, selected, detail)
 
     async def on_error(self, query: Query, error: Exception):
         return Result("AI Ask error", _friendly_error(error), icon=ERROR_ICON)

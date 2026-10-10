@@ -20,7 +20,7 @@ The JSON-RPC connection with the remote party was lost before the request could 
 
 ## 功能
 
-- `ai <问题>`：流式回答，原地更新 Flow 结果列表；保留输入框的 `ai` 关键字。
+- `ai <问题>`：先显示“Generate response”；按 Enter 或点击后才开始流式回答，避免用户仍在输入时提前发送。
 - API 配置：Base URL、API Key、Model、Max Token、Timeout。
 - 全局 Skill：启用后自动合并为每个请求的 system prompt，可同时启用多条。
 - 动态 Skill：`/add` 仅为当前请求加载，不改变全局配置。
@@ -177,7 +177,7 @@ ai /add review 请检查这段代码
 
 | 输入 | 行为 |
 |---|---|
-| `ai <问题>` | 全局 Skill + 问题，开始流式回答 |
+| `ai <问题>` | 显示 Generate response；按 Enter 或点击才发送并开始流式回答 |
 | `ai /stop` | 取消当前生成 |
 | `ai /clear` | 清空当前 session 最近回答并停止生成 |
 | `ai /last` | 显示最近回答；Enter 或 `Ctrl+C` 复制 |
