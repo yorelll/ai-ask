@@ -4,8 +4,8 @@ using System.Net.Http;
 using System.Text;
 using AIAsk.Plugin.Answer;
 using AIAsk.Plugin.Chat;
-using AIAsk.Plugin.Settings;
 using AIAsk.Plugin.Skills;
+using AIAsk.Plugin.Settings;
 using Flow.Launcher.Plugin;
 
 namespace AIAsk.Plugin;
@@ -29,7 +29,7 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingP
 
     private readonly AnswerSession _session;
     private readonly IChatClientFactory _chatClientFactory;
-    private readonly IPluginSettingsAccessor _settings;
+    private AIAsk.Plugin.Settings.IPluginSettingsAccessor _settings;
     private readonly object _generationGate = new();
     private readonly ConcurrentDictionary<long, CancellationTokenSource> _cancellations = new();
 
@@ -41,14 +41,14 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingP
     private Query? _activeQuery;
 
     public Main()
-        : this(new AnswerSession(), new DefaultChatClientFactory(), new InMemoryPluginSettingsAccessor())
+        : this(new AnswerSession(), new DefaultChatClientFactory(), new UninitializedSettingsAccessor())
     {
     }
 
     internal Main(
         AnswerSession session,
         IChatClientFactory chatClientFactory,
-        IPluginSettingsAccessor settings)
+        AIAsk.Plugin.Settings.IPluginSettingsAccessor settings)
     {
         _session = session ?? throw new ArgumentNullException(nameof(session));
         _chatClientFactory = chatClientFactory ?? throw new ArgumentNullException(nameof(chatClientFactory));
@@ -64,6 +64,11 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingP
         _context = context;
         var metadata = context.CurrentPluginMetadata;
         _skills = new SkillRepository(metadata.PluginDirectory, metadata.PluginSettingsDirectoryPath);
+        if (_settings is UninitializedSettingsAccessor)
+        {
+            _settings = new FlowPluginSettingsAccessor(context.API);
+        }
+        FlowPluginSettingsAccessor.Normalize(_settings.Current);
         _skillSettingsController = new SkillSettingsController(_skills);
         _previewFactory = new AnswerPreviewPanelFactory();
         await Task.CompletedTask;
@@ -111,7 +116,7 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingP
             return [CreateResult("AI Ask", "Enter a prompt, then press Enter on Generate response.", DefaultIcon)];
         }
 
-        if (TryHandleCommand(raw, out var commandResults))
+        if (TryHandleCommand(query, raw, out var commandResults))
         {
             return commandResults;
         }
@@ -125,7 +130,7 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingP
         return [CreateSendResult(query, request)];
     }
 
-    private bool TryHandleCommand(string raw, out List<Result> results)
+    private bool TryHandleCommand(Query query, string raw, out List<Result> results)
     {
         var command = raw.Split((char[]?)null, 2, StringSplitOptions.RemoveEmptyEntries)[0];
         switch (command.ToLowerInvariant())
@@ -143,7 +148,7 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingP
                     : [CreateCopyResult("Copy full answer", CreateSummary(answer), answer, AnswerIcon)];
                 return true;
             case "/add":
-                results = BuildDynamicSkillResults(raw);
+                results = BuildDynamicSkillResults(query, raw);
                 return true;
             default:
                 results = [];
@@ -151,7 +156,7 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingP
         }
     }
 
-    private List<Result> BuildDynamicSkillResults(string raw)
+    private List<Result> BuildDynamicSkillResults(Query query, string raw)
     {
         var repository = RequireSkills();
         var remainder = raw.Length <= 4 ? string.Empty : raw[4..].TrimStart(' ', ':', '：');
@@ -164,7 +169,7 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingP
         }
 
         return TryCreateRequest(raw, out var request, out var error)
-            ? [CreateSendResult(_activeQuery ?? new Query(), request)]
+            ? [CreateSendResult(query, request)]
             : [CreateResult("Dynamic skill error", error, ErrorIcon)];
     }
 
@@ -172,8 +177,8 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingP
     {
         request = default!;
         error = string.Empty;
-        var baseUrl = _settings.Get("base_url");
-        var apiKey = _settings.Get("api_key");
+        var baseUrl = _settings.Current.BaseUrl;
+        var apiKey = _settings.Current.ApiKey;
         if (string.IsNullOrWhiteSpace(baseUrl) || string.IsNullOrWhiteSpace(apiKey))
         {
             error = "Configure Base URL and API Key in plugin settings.";
@@ -231,10 +236,10 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingP
             new ChatRequest(
                 baseUrl,
                 apiKey,
-                _settings.Get("model") ?? DefaultModel,
+                _settings.Current.Model,
                 messages,
-                ParsePositiveInt(_settings.Get("max_tokens"), DefaultMaxTokens),
-                TimeSpan.FromSeconds(ParsePositiveInt(_settings.Get("timeout"), DefaultTimeoutSeconds)),
+                _settings.Current.MaxTokens,
+                TimeSpan.FromSeconds(_settings.Current.TimeoutSeconds),
                 new Dictionary<string, string> { ["X-Skill-Count"] = dynamicSkills.Count.ToString() }));
         return true;
     }
@@ -411,8 +416,7 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingP
         };
         if (_previewFactory is not null)
         {
-            answerResult.PreviewPanel = new Lazy<System.Windows.Controls.UserControl>(
-                () => _previewFactory.Create(snapshot));
+            answerResult.PreviewPanel = _previewFactory.CreateLive(_session);
         }
         results.Add(answerResult);
         return results;
@@ -458,10 +462,6 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingP
         OpenAiCompatibleChatClient Create();
     }
 
-    internal interface IPluginSettingsAccessor
-    {
-        string? Get(string key);
-    }
 
     private sealed class DefaultChatClientFactory : IChatClientFactory
     {
@@ -469,9 +469,10 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingP
         public OpenAiCompatibleChatClient Create() => new(Client);
     }
 
-    private sealed class InMemoryPluginSettingsAccessor : IPluginSettingsAccessor
+    private sealed class UninitializedSettingsAccessor : AIAsk.Plugin.Settings.IPluginSettingsAccessor
     {
-        public string? Get(string key) => null;
+        public AIAskPluginSettings Current { get; } = new();
+        public void Save() { }
     }
 
     private sealed record PendingRequest(string Prompt, ChatRequest Request);
