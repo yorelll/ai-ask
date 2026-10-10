@@ -10,7 +10,7 @@ public sealed class MainTests
     {
         var plugin = new Main();
 
-        var results = plugin.Query(new Query { Search = string.Empty });
+        var results = plugin.Query(new Query());
 
         var result = Assert.Single(results);
         Assert.Equal("AI Ask (C# bootstrap)", result.Title);
@@ -19,12 +19,14 @@ public sealed class MainTests
     }
 
     [Fact]
-    public void Query_EchoesPrompt_InBootstrapSubtitle()
+    public void Query_ReturnsIndependentResultLists()
     {
         var plugin = new Main();
 
-        var result = Assert.Single(plugin.Query(new Query { Search = "hello Flow" }));
+        var first = plugin.Query(new Query());
+        var second = plugin.Query(new Query());
 
-        Assert.Contains("hello Flow", result.SubTitle, StringComparison.Ordinal);
+        Assert.NotSame(first, second);
+        Assert.Equal("AI Ask (C# bootstrap)", Assert.Single(second).Title);
     }
 }

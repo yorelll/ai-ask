@@ -17,17 +17,12 @@ public sealed class Main : IPlugin
 
     public List<Result> Query(Query query)
     {
-        var prompt = query.Search?.Trim() ?? string.Empty;
-        var subtitle = string.IsNullOrEmpty(prompt)
-            ? "Native C# migration bootstrap is ready."
-            : $"C# migration bootstrap received: {prompt}";
-
         return
         [
             new Result
             {
                 Title = "AI Ask (C# bootstrap)",
-                SubTitle = subtitle,
+                SubTitle = "Native C# migration bootstrap is ready.",
                 IcoPath = "Images\\plugin.png",
                 Action = _ => false
             }
