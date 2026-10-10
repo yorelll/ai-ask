@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Net.Http;
 using AIAsk.Plugin.Answer;
 using AIAsk.Plugin.Chat;
 using AIAsk.Plugin.Skills;
