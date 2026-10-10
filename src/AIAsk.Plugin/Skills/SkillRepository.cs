@@ -222,7 +222,7 @@ public sealed class SkillRepository
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Singleline);
         if (!compact.Success)
         {
-            return TokenizeQuoted(text);
+            return TokenizeManagementSpaceForm(text);
         }
 
         var command = compact.Groups[1].Value.ToLowerInvariant();
@@ -379,6 +379,33 @@ public sealed class SkillRepository
         return match.Success
             ? (match.Groups[1].Value.Trim(), match.Groups[2].Value.ToLowerInvariant())
             : (value.Trim(), null);
+    }
+
+    private static IReadOnlyList<string> TokenizeManagementSpaceForm(string text)
+    {
+        var tokens = TokenizeQuoted(text).ToList();
+        if (tokens.Count is < 3 || tokens[0] is not ("add" or "edit"))
+        {
+            return tokens;
+        }
+
+        var aliasCount = tokens[0] == "add" ? 1 : 2;
+        var flag = tokens[^1] is "global" or "on" or "true" or "1" ? tokens[^1] : null;
+        var pathStart = 1 + aliasCount;
+        var pathEnd = flag is null ? tokens.Count : tokens.Count - 1;
+        if (pathStart >= pathEnd)
+        {
+            return tokens;
+        }
+
+        var normalized = tokens.Take(pathStart).ToList();
+        normalized.Add(string.Join(" ", tokens.Skip(pathStart).Take(pathEnd - pathStart)));
+        if (flag is not null)
+        {
+            normalized.Add(flag);
+        }
+
+        return normalized;
     }
 
     private static IReadOnlyList<string> TokenizeQuoted(string text)
