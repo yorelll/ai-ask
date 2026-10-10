@@ -4,6 +4,7 @@ using System.Net.Http;
 using System.Text;
 using AIAsk.Plugin.Answer;
 using AIAsk.Plugin.Chat;
+using AIAsk.Plugin.Settings;
 using AIAsk.Plugin.Skills;
 using Flow.Launcher.Plugin;
 
@@ -14,7 +15,7 @@ namespace AIAsk.Plugin;
 /// are injected through dedicated interfaces so they can evolve independently
 /// from query, streaming, and skill behavior.
 /// </summary>
-public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated
+public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingProvider
 {
     private const string DefaultModel = "fast";
     private const int DefaultMaxTokens = 100_000;
@@ -34,6 +35,8 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated
 
     private PluginInitContext? _context;
     private SkillRepository? _skills;
+    private SkillSettingsController? _skillSettingsController;
+    private AnswerPreviewPanelFactory? _previewFactory;
     private long _activeGeneration;
     private Query? _activeQuery;
 
@@ -61,8 +64,13 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated
         _context = context;
         var metadata = context.CurrentPluginMetadata;
         _skills = new SkillRepository(metadata.PluginDirectory, metadata.PluginSettingsDirectoryPath);
+        _skillSettingsController = new SkillSettingsController(_skills);
+        _previewFactory = new AnswerPreviewPanelFactory();
         await Task.CompletedTask;
     }
+
+    public System.Windows.Controls.Control CreateSettingPanel() =>
+        NativeSkillSettingsPanel.Create(RequireSkillSettingsController());
 
     public Task<List<Result>> QueryAsync(Query query, CancellationToken token)
     {
@@ -357,6 +365,9 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated
     private SkillRepository RequireSkills() =>
         _skills ?? throw new InvalidOperationException("Plugin has not been initialized.");
 
+    private SkillSettingsController RequireSkillSettingsController() =>
+        _skillSettingsController ?? throw new InvalidOperationException("Plugin has not been initialized.");
+
     private void OnSessionChanged(object? sender, AnswerSessionSnapshot snapshot)
     {
         var query = _activeQuery;
@@ -391,13 +402,19 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated
         var subtitle = snapshot.State is AnswerSessionState.Failed
             ? snapshot.ErrorMessage ?? "The AI request failed."
             : snapshot.Summary;
-        results.Add(new Result
+        var answerResult = new Result
         {
             Title = title,
             SubTitle = subtitle,
             IcoPath = snapshot.State is AnswerSessionState.Failed ? ErrorIcon : AnswerIcon,
             Action = _ => false
-        });
+        };
+        if (_previewFactory is not null)
+        {
+            answerResult.PreviewPanel = new Lazy<System.Windows.Controls.UserControl>(
+                () => _previewFactory.Create(snapshot));
+        }
+        results.Add(answerResult);
         return results;
     }
 
