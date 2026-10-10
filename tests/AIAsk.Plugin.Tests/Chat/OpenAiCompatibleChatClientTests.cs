@@ -108,8 +108,8 @@ public sealed class OpenAiCompatibleChatClientTests
         var handler = new StubHandler((request, _) =>
         {
             Assert.Equal("ok", request.Headers.GetValues("X-Skill-1").Single());
-            Assert.False(request.Headers.Contains("Bad Header"));
-            Assert.False(request.Headers.Contains("X-Newline"));
+            Assert.DoesNotContain(request.Headers, header => header.Key == "Bad Header");
+            Assert.DoesNotContain(request.Headers, header => header.Key.Contains("Newline", StringComparison.Ordinal));
             return Task.FromResult(SseResponse("data: [DONE]\n\n"));
         });
         using var httpClient = new HttpClient(handler);
