@@ -5,6 +5,14 @@ namespace AIAsk.Plugin.Skills;
 /// </summary>
 public sealed record SkillDefinition(string Alias, string Path, bool Global);
 
+public sealed class SkillStorageException : InvalidOperationException
+{
+    public SkillStorageException(string message, Exception? innerException = null)
+        : base(message, innerException)
+    {
+    }
+}
+
 public sealed record SkillValidationResult(bool IsValid, string? Error)
 {
     public static SkillValidationResult Valid { get; } = new(true, null);
