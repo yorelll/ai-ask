@@ -2,6 +2,12 @@ name: Publish Native C# Release
 
 on:
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish the GitHub release (normally publish from a matching csharp-v* tag)"
+        required: false
+        type: boolean
+        default: false
   push:
     tags:
       - "csharp-v*"
@@ -91,6 +97,7 @@ jobs:
           Get-Item $archive | Select-Object Name,Length
 
       - name: Publish native C# release
+        if: startsWith(github.ref, 'refs/tags/') || inputs.publish == true
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
