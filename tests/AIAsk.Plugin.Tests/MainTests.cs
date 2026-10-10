@@ -10,7 +10,7 @@ public sealed class MainTests
     {
         var plugin = new Main();
 
-        var result = Assert.Single(await plugin.QueryAsync(new Query(), CancellationToken.None));
+        var result = Assert.Single(await plugin.QueryAsync(new Query { ActionKeyword = "ai" }, CancellationToken.None));
 
         Assert.Equal("AI Ask", result.Title);
         Assert.Contains("Generate response", result.SubTitle, StringComparison.OrdinalIgnoreCase);
@@ -21,7 +21,7 @@ public sealed class MainTests
     {
         var plugin = new Main();
 
-        var result = Assert.Single(await plugin.QueryAsync(new Query(), CancellationToken.None));
+        var result = Assert.Single(await plugin.QueryAsync(new Query { ActionKeyword = "ai" }, CancellationToken.None));
 
         Assert.Equal("AI Ask", result.Title);
     }
@@ -33,7 +33,7 @@ public sealed class MainTests
 
         var results = await plugin.QueryAsync(new Query(), CancellationToken.None);
 
-        Assert.Single(results);
+        Assert.Empty(results);
     }
 
 }
