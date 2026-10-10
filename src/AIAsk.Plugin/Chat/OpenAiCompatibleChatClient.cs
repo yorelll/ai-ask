@@ -126,7 +126,11 @@ public sealed class OpenAiCompatibleChatClient
         }
     }
 
-    internal static bool TryReadContentDelta(string eventData, out string content)
+    /// <summary>
+    /// Extracts a non-empty assistant text delta from one SSE JSON payload.
+    /// Exposed for deterministic parser tests and hosts that need diagnostics.
+    /// </summary>
+    public static bool TryReadContentDelta(string eventData, out string content)
     {
         content = string.Empty;
 
