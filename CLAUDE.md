@@ -18,3 +18,5 @@
 
 - Do not create or replace a Release until implementation tests, GitHub CI, and reviewer re-verification have all completed with no remaining confirmed findings.
 - A public tag/release must point at the reviewed, CI-validated commit.
+- Python and C# release progress are independent. Python uses `v<semver>` tags (for example `v0.0.2`); C# uses `csharp-v<semver>` tags (for example `csharp-v0.0.1`). This allows both implementations to use the same semantic version numbers without overwriting each other.
+- `csharp-v*` is a technical Git/CI tag only. User-facing C# release titles, ZIP names, manifests, UI, and documentation must use normal product naming (`AI Ask`, `AIAsk-<version>.zip`) and must not emphasize the implementation language.
