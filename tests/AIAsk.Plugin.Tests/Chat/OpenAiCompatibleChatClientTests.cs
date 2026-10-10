@@ -23,7 +23,7 @@ public sealed class OpenAiCompatibleChatClientTests
             var json = await request.Content!.ReadAsStringAsync();
             using var document = JsonDocument.Parse(json);
             Assert.Equal("fast", document.RootElement.GetProperty("model").GetString());
-            Assert.Equal(100_000, document.RootElement.GetProperty("maxTokens").GetInt32());
+            Assert.Equal(100_000, document.RootElement.GetProperty("max_tokens").GetInt32());
             Assert.Equal(0.7, document.RootElement.GetProperty("temperature").GetDouble());
             Assert.True(document.RootElement.GetProperty("stream").GetBoolean());
             Assert.Equal("hello", document.RootElement.GetProperty("messages")[0].GetProperty("content").GetString());
