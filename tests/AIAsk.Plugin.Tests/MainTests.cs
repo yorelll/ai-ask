@@ -17,13 +17,23 @@ public sealed class MainTests
     }
 
     [Fact]
-    public async Task QueryAsync_StopWithoutGeneration_ReturnsFriendlyResult()
+    public async Task QueryAsync_StopWithoutGeneration_ReturnsPromptForEmptyQuery()
     {
         var plugin = new Main();
 
         var result = Assert.Single(await plugin.QueryAsync(new Query(), CancellationToken.None));
 
         Assert.Equal("AI Ask", result.Title);
+    }
+
+    [Fact]
+    public async Task QueryAsync_DoesNotClaimUnrelatedGlobalQuery()
+    {
+        var plugin = new Main();
+
+        var results = await plugin.QueryAsync(new Query(), CancellationToken.None);
+
+        Assert.Single(results);
     }
 
 }

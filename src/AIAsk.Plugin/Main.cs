@@ -111,6 +111,23 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingP
     {
         var raw = (query.Search ?? string.Empty).Trim().TrimStart(':', '：');
 
+        // The wildcard keyword only normalizes compact forms such as
+        // ai:/add:translate:prompt. Return no results for unrelated globals.
+        if (!string.Equals(query.ActionKeyword, "ai", StringComparison.OrdinalIgnoreCase))
+        {
+            var compact = System.Text.RegularExpressions.Regex.Match(
+                raw,
+                @"^ai\s*[:：]\s*(.+)$",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase |
+                System.Text.RegularExpressions.RegexOptions.Singleline);
+            if (!compact.Success)
+            {
+                return [];
+            }
+
+            raw = compact.Groups[1].Value.Trim();
+        }
+
         if (string.IsNullOrEmpty(raw))
         {
             return [CreateResult("AI Ask", "Enter a prompt, then press Enter on Generate response.", DefaultIcon)];
@@ -287,11 +304,16 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingP
 
     private bool StartGeneration(Query query, PendingRequest pending)
     {
-        var generation = _session.Begin(pending.Prompt);
-        var cancellation = new CancellationTokenSource();
+        CancellationTokenSource cancellation;
+        long generation;
         lock (_generationGate)
         {
+            // Cancel A before Begin(B). AnswerSession.CancelActive only affects
+            // the current streaming generation; reversing this order would
+            // cancel B immediately after it becomes current.
             CancelAndDisposeActiveUnsafe();
+            generation = _session.Begin(pending.Prompt);
+            cancellation = new CancellationTokenSource();
             _activeGeneration = generation;
             _activeQuery = query;
             _cancellations[generation] = cancellation;

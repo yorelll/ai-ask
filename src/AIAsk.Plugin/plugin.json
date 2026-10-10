@@ -8,5 +8,9 @@
   "Language": "csharp",
   "Website": "https://github.com/yorelll/ai-ask",
   "IcoPath": "Images\\plugin.png",
-  "ExecuteFileName": "AIAsk.Plugin.dll"
+  "ExecuteFileName": "AIAsk.Plugin.dll",
+  "ActionKeywords": [
+    "ai",
+    "*"
+  ]
 }
