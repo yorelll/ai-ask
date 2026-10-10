@@ -21,8 +21,8 @@ body:
     attributes:
       name: max_tokens
       label: Max Token
-      description: "Maximum number of tokens in the model response. Default 1000."
-      defaultValue: "1000"
+      description: "Maximum number of tokens in the model response. Default 100000. The endpoint/model may impose a lower limit."
+      defaultValue: "100000"
   - type: input
     attributes:
       name: timeout

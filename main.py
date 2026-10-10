@@ -571,7 +571,7 @@ class AIAskPlugin(Plugin):
 
             def producer():
                 try:
-                    for content in _open_sse_stream(base_url, api_key, model, messages, _as_int(getattr(self.settings, "max_tokens", 1000), 1000), timeout, headers):
+                    for content in _open_sse_stream(base_url, api_key, model, messages, _as_int(getattr(self.settings, "max_tokens", 100000), 100000), timeout, headers):
                         if self._stop_event.is_set():
                             break
                         loop.call_soon_threadsafe(queue.put_nowait, ("chunk", content))

@@ -21,7 +21,7 @@ The JSON-RPC connection with the remote party was lost before the request could 
 ## 功能
 
 - `ai <问题>`：先显示“Generate response”；按 Enter 或点击后才开始流式回答，避免用户仍在输入时提前发送；发送后输入框保留干净的 `ai` 或 `ai /add <skill>`。
-- API 配置：Base URL、API Key、Model、Max Token、Timeout。
+- API 配置：Base URL、API Key、Model、Max Token、Timeout；默认 Max Token 为 `100000`。
 - 全局 Skill：启用后自动合并为每个请求的 system prompt，可同时启用多条。
 - 动态 Skill：`/add` 仅为当前请求加载，不改变全局配置。
 - Skill 双管理入口：
