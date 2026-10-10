@@ -1,64 +1,64 @@
-# Native C# release
+# AI Ask release packaging
 
-The repository currently contains two intentionally distinct plugin lines:
+The release workflow creates an **AI Ask** plugin archive for Flow Launcher.
 
-| Line | Manifest language | Release tag | Runtime |
-|---|---|---|---|
-| Existing Python release | `python_v2` | `v0.0.1` | Python 3.11+ |
-| Native C# release | `csharp` | `csharp-v1.0.0-csharp.1` | Flow/.NET only |
+## Version and tag
 
-The native C# release must **never overwrite** the Python `v0.0.1` release.
-
-## Triggering a native release
-
-The workflow `.github/workflows/csharp-release.yml` publishes from:
-
-```text
-csharp-v<version>
-```
-
-A manual workflow run performs build/test/package validation by default. It only
-publishes if the operator explicitly sets its `publish` input to `true`.
-
-For example, when `src/AIAsk.Plugin/plugin.json` contains:
+The plugin manifest defines the user-visible version, for example:
 
 ```json
-"Version": "1.0.0-csharp.1"
+"Version": "1.0.0"
 ```
 
-publish:
+The release workflow uses the technical automation tag:
 
 ```text
-csharp-v1.0.0-csharp.1
+csharp-v1.0.0
 ```
 
-The workflow runs on Windows, restores/builds/tests the C# solution, stages only
-native DLL output plus the C# manifest and images, verifies the staged contents,
-and publishes `AIAsk.Native.CSharp-<version>.zip`.
-
-## Native artifact layout
-
-The zip root contains:
+The implementation language and automation tag are internal details; the user-visible GitHub release and archive are named simply:
 
 ```text
-plugin.json                 # Language: csharp
-AIAsk.Plugin.dll            # ExecuteFileName
-*.dll                       # required managed dependencies
+AI Ask v1.0.0
+AIAsk-1.0.0.zip
+```
+
+## Publish flow
+
+`.github/workflows/csharp-release.yml`:
+
+1. Runs on Windows;
+2. restores, builds, and tests the solution;
+3. stages the Flow plugin manifest, executable DLL, managed dependencies, and images;
+4. verifies staging and ZIP contents;
+5. publishes the `AI Ask` GitHub release on a matching `csharp-v<version>` tag.
+
+A manual workflow run performs packaging validation by default. It only publishes
+when the operator explicitly sets its `publish` input to `true`.
+
+## Artifact layout
+
+The ZIP root contains:
+
+```text
+plugin.json
+AIAsk.Plugin.dll
+*.dll
 Images/plugin.png
 Images/*.png
 ```
 
-It deliberately excludes the Python runtime assets:
+The packaging verifier rejects obsolete Python runtime files and folders:
 
 ```text
 main.py
 requirements.txt
 SettingsTemplate.yaml
+test_v2_protocol.py
 lib/
 skill_files/
-test_v2_protocol.py
+.venv/
+task/
 ```
 
-Install by extracting the archive into a Flow Launcher plugin directory. Do not
-install the Python and native editions under the same plugin directory, because
-they share the same plugin ID.
+Extract the archive contents directly into a Flow Launcher plugin directory.

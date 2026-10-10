@@ -1,10 +1,10 @@
-name: Publish Native C# Release
+name: Publish AI Ask Release
 
 on:
   workflow_dispatch:
     inputs:
       publish:
-        description: "Publish the GitHub release (normally publish from a matching csharp-v* tag)"
+        description: "Publish this AI Ask release (normally publish from a matching csharp-v* tag)"
         required: false
         type: boolean
         default: false
@@ -26,13 +26,13 @@ jobs:
         with:
           dotnet-version: "9.0.x"
 
-      - name: Read native manifest version
+      - name: Read release version
         id: version
         shell: pwsh
         run: |
           $manifest = Get-Content "src/AIAsk.Plugin/plugin.json" -Raw | ConvertFrom-Json
           if ($manifest.Language -ne "csharp") {
-            Write-Error "Native release requires Language=csharp."
+            Write-Error "Release manifest requires Language=csharp."
             exit 1
           }
           $version = $manifest.Version
@@ -64,7 +64,7 @@ jobs:
         id: stage
         shell: pwsh
         run: |
-          $stage = Join-Path $env:RUNNER_TEMP "AIAsk.Native.CSharp"
+          $stage = Join-Path $env:RUNNER_TEMP "AIAsk.Release"
           Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Path $stage | Out-Null
 
@@ -81,7 +81,7 @@ jobs:
 
           "stage=$stage" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8
 
-      - name: Verify native C# artifact staging
+      - name: Verify release artifact staging
         shell: pwsh
         run: |
           ./scripts/verify-csharp-release.ps1 `
@@ -92,25 +92,25 @@ jobs:
         id: package
         shell: pwsh
         run: |
-          $archive = "AIAsk.Native.CSharp-${{ steps.version.outputs.version }}.zip"
+          $archive = "AIAsk-${{ steps.version.outputs.version }}.zip"
           Compress-Archive -Path "${{ steps.stage.outputs.stage }}\*" -DestinationPath $archive -Force
           "archive=$archive" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding ascii
           Get-Item $archive | Select-Object Name,Length
 
-      - name: Publish native C# release
+      - name: Publish AI Ask release
         if: startsWith(github.ref, 'refs/tags/') || inputs.publish == true
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           target_commitish: ${{ github.sha }}
-          name: AI Ask Native C# v${{ steps.version.outputs.version }}
+          name: AI Ask v${{ steps.version.outputs.version }}
           files: ${{ steps.package.outputs.archive }}
           body: |
-            Native C# edition of AI Ask for Flow Launcher.
+            AI Ask for Flow Launcher.
 
-            This release is intentionally separate from the Python `v0.0.1` line.
-            Install the archive contents as a Flow plugin directory. It contains a
-            native C# DLL and managed dependencies; it does not require Python.
+            Download the archive and extract its contents into a Flow Launcher
+            plugin directory. The package includes the plugin and its required
+            managed dependencies; no Python setup is required.
           draft: false
           prerelease: false
         env:
