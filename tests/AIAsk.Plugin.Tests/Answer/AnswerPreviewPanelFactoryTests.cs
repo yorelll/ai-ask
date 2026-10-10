@@ -17,9 +17,9 @@ public sealed class AnswerPreviewPanelFactoryTests
             Summary: "complete answer",
             ErrorMessage: null);
 
-        var panel = RunOnSta(() => new AnswerPreviewPanelFactory().Create(snapshot));
+        var answer = RunOnSta(() => new AnswerPreviewPanelFactory().Create(snapshot).AnswerText);
 
-        Assert.Equal("complete answer", panel.AnswerText);
+        Assert.Equal("complete answer", answer);
     }
 
     [Fact]
