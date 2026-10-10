@@ -51,6 +51,7 @@ public sealed class SkillSettingsControllerTests : IDisposable
     [Fact]
     public void StorageFailure_IsReturnedToNativeSettingsPanelAdapter()
     {
+        Directory.CreateDirectory(_root);
         var fileSystem = new ThrowingReadFileSystem();
         var repository = new SkillRepository(_root, Path.Combine(_root, "settings"), fileSystem);
         var controller = new SkillSettingsController(repository);
