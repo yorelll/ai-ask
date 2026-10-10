@@ -75,7 +75,7 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingP
     }
 
     public System.Windows.Controls.Control CreateSettingPanel() =>
-        NativeSkillSettingsPanel.Create(RequireSkillSettingsController());
+        NativeSkillSettingsPanel.Create(RequireSkillSettingsController(), _settings);
 
     public Task<List<Result>> QueryAsync(Query query, CancellationToken token)
     {
