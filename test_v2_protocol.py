@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -96,19 +97,41 @@ async def main() -> int:
     if not API_KEY:
         print("SKIP: set AI_API_KEY to run the live V2 streaming test.")
         return 0
+    test_settings = ROOT / "test-data"
+    shutil.rmtree(test_settings, ignore_errors=True)
+    test_settings.mkdir(parents=True)
     sim = FlowSim()
     await sim.start()
     try:
         metadata = {
             "id": "test-plugin", "name": "AIAsk", "actionKeywords": ["ai"],
             "pluginDirectory": str(ROOT),
-            "pluginSettingsDirectoryPath": str(ROOT / "test-data"),
+            "pluginSettingsDirectoryPath": str(test_settings),
             "executeFileName": "main.py",
         }
         await sim.request("initialize", [{"currentPluginMetadata": metadata}])
+        # Exercise the user's dynamic-skill flow: /add trns <prompt>.
+        # The copied skill is deliberately non-global and must only affect this
+        # request; it also verifies the clean visible query becomes `ai /add trns`.
+        (test_settings / "skills.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "skills": [
+                        {
+                            "alias": "trns",
+                            "path": str(ROOT / "skill_files" / "translate.md"),
+                            "global": False,
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
         query = {
-            "search": "Reply with exactly: STDLIB_OK",
-            "rawQuery": "ai Reply with exactly: STDLIB_OK",
+            "search": "/add trns Reply with exactly: STDLIB_OK",
+            "rawQuery": "ai /add trns Reply with exactly: STDLIB_OK",
             "isReQuery": False,
             "actionKeyword": "ai",
         }
@@ -124,22 +147,27 @@ async def main() -> int:
         send_response = await sim.request(send_action["method"], send_action.get("parameters", []))
         assert send_response.get("result", {}).get("hide") is False
 
+        # The send action restores a clean visible /add input, never an
+        # internal /stream key or the user's full long prompt.
+        assert sim.change_queries and sim.change_queries[0] == "ai /add trns"
         displayed = []
+        seen_refreshes = 0
         for _ in range(16):
             await asyncio.sleep(5)
-            if not sim.change_queries:
-                continue
-            assert sim.change_queries[-1].startswith("ai /stream ")
-            # Simulate Flow's ordinary query routing after ChangeQuery. This is
-            # the production workaround for Flow 2.1.x dropping V2 UpdateResults.
-            stream_query = {
-                "search": sim.change_queries[-1].removeprefix("ai "),
-                "rawQuery": sim.change_queries[-1],
-                "isReQuery": True,
-                "actionKeyword": "ai",
-            }
-            display_response = await sim.request("query", [stream_query, SETTINGS], timeout=30)
-            displayed = display_response.get("result", {}).get("result") or []
+            assert all(key == "ai /add trns" for key in sim.change_queries)
+            while seen_refreshes < len(sim.change_queries):
+                # Simulate Flow's ordinary query routing after ChangeQuery. The
+                # visible query remains clean `/add trns`; requery=True forces
+                # each refresh without restarting the endpoint request.
+                stream_query = {
+                    "search": "/add trns",
+                    "rawQuery": "ai /add trns",
+                    "isReQuery": True,
+                    "actionKeyword": "ai",
+                }
+                display_response = await sim.request("query", [stream_query, SETTINGS], timeout=30)
+                displayed = display_response.get("result", {}).get("result") or []
+                seen_refreshes += 1
             rendered = json.dumps(displayed, ensure_ascii=False).lower()
             if "stdlib_ok" in rendered:
                 break
@@ -149,8 +177,10 @@ async def main() -> int:
         assert "stdlib_ok" in rendered, "stdlib SSE response missing expected answer"
         assert "error" not in rendered, "stream produced an error result"
 
-        final = displayed[0]
-        action = final["jsonRPCAction"]
+        copy_result = next(
+            item for item in displayed if item.get("title") == "Copy full answer"
+        )
+        action = copy_result["jsonRPCAction"]
         action_response = await sim.request(action["method"], action.get("parameters", []))
         assert action_response.get("result", {}).get("hide") is True
         assert sim.clipboard_requests, "Enter did not request clipboard copy"
@@ -159,6 +189,7 @@ async def main() -> int:
         return 0
     finally:
         await sim.stop()
+        shutil.rmtree(test_settings, ignore_errors=True)
 
 
 if __name__ == "__main__":
