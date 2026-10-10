@@ -324,9 +324,29 @@ public sealed class SkillRepository
             var document = JsonSerializer.Deserialize<SkillsDocument>(json, _jsonOptions);
             return document?.Skills?.ToList() ?? [];
         }
-        catch (JsonException)
+        catch (JsonException exception)
         {
-            return [];
+            throw new SkillStorageException(
+                $"Skill storage contains invalid JSON and was not changed: {StoragePath}",
+                exception);
+        }
+        catch (DecoderFallbackException exception)
+        {
+            throw new SkillStorageException(
+                $"Skill storage must be UTF-8 and was not changed: {StoragePath}",
+                exception);
+        }
+        catch (UnauthorizedAccessException exception)
+        {
+            throw new SkillStorageException(
+                $"Skill storage cannot be read and was not changed: {StoragePath}",
+                exception);
+        }
+        catch (IOException exception)
+        {
+            throw new SkillStorageException(
+                $"Skill storage cannot be read and was not changed: {StoragePath}",
+                exception);
         }
     }
 
