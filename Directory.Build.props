@@ -6,10 +6,4 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <LangVersion>latest</LangVersion>
   </PropertyGroup>
-
-  <!-- Flow.Launcher.Plugin 5.3.2 is a legacy netstandard package and does not
-       transitively expose HttpClient under the Windows desktop reference set. -->
-  <ItemGroup>
-    <Reference Include="System.Net.Http" />
-  </ItemGroup>
 </Project>
