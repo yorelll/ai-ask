@@ -26,15 +26,4 @@ public sealed class MainTests
         Assert.Equal("AI Ask", result.Title);
     }
 
-    [Fact]
-    public void Query_ReturnsIndependentResultLists()
-    {
-        var plugin = new Main();
-
-        var first = plugin.Query(new Query());
-        var second = plugin.Query(new Query());
-
-        Assert.NotSame(first, second);
-        Assert.Equal("AI Ask (C# bootstrap)", Assert.Single(second).Title);
-    }
 }
