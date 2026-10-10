@@ -183,7 +183,11 @@ public sealed class SkillRepositoryTests : IDisposable
         }
     }
 
-    private SkillRepository CreateRepository() => new(_root, Path.Combine(_root, "settings"));
+    private SkillRepository CreateRepository()
+    {
+        Directory.CreateDirectory(_root);
+        return new SkillRepository(_root, Path.Combine(_root, "settings"));
+    }
 
     private SkillRepository RepositoryWithSkills()
     {
