@@ -412,6 +412,8 @@ class ActionResult(Result):
 
 
 class AIResult(Result):
+    """An explicit copy action for a complete (or current) answer."""
+
     def __init__(self, title, sub="", copy_text=None, icon=ICON):
         super().__init__(title=title, sub=sub, icon=icon, copy_text=copy_text)
         self._answer = copy_text or ""
@@ -419,6 +421,21 @@ class AIResult(Result):
     async def callback(self) -> ExecuteResponse:
         copied = await _copy_to_clipboard(self, self._answer)
         return ExecuteResponse(hide=copied)
+
+
+class AnswerSummaryResult(Result):
+    """A passive summary row: clicking it must keep Flow visible."""
+
+    async def callback(self) -> ExecuteResponse:
+        return ExecuteResponse(hide=False)
+
+
+def _answer_summary(text: str, limit: int = 180) -> str:
+    """Use one compact line so long/multiline replies do not distort a result row."""
+    compact = " ".join(text.split())
+    if len(compact) <= limit:
+        return compact or "Generating response…"
+    return compact[: limit - 1].rstrip() + "…"
 
 
 class StartGenerationResult(Result):
@@ -689,7 +706,19 @@ class AIAskPlugin(Plugin):
                 if chunks_since_update >= 6:
                     if not await self._refresh_display(
                         generation,
-                        [AIResult("Generating…", text, copy_text=text, icon=GENERATING_ICON)],
+                        [
+                            AIResult(
+                                "Copy answer so far",
+                                "Enter copies the current complete response",
+                                copy_text=text,
+                                icon=ANSWER_ICON,
+                            ),
+                            AnswerSummaryResult(
+                                title="Generating…",
+                                sub=_answer_summary(text),
+                                icon=GENERATING_ICON,
+                            ),
+                        ],
                         text,
                     ):
                         return text
@@ -700,9 +729,14 @@ class AIAskPlugin(Plugin):
                     generation,
                     [
                         AIResult(
-                            "Answer ready — Enter or Ctrl+C to copy",
-                            text,
+                            "Copy full answer",
+                            "Enter copies the complete answer to the clipboard",
                             copy_text=text,
+                            icon=ANSWER_ICON,
+                        ),
+                        AnswerSummaryResult(
+                            title="Answer ready",
+                            sub=_answer_summary(text),
                             icon=ANSWER_ICON,
                         )
                     ],
@@ -918,16 +952,6 @@ class MainSearchHandler(SearchHandler):
                 plugin.stop_stream()
                 plugin._display_mode = False
             else:
-                if plugin._display_text:
-                    return [
-                        AIResult(
-                            "Copy full answer",
-                            "Enter copies the complete answer to the clipboard",
-                            copy_text=plugin._display_text,
-                            icon=ANSWER_ICON,
-                        ),
-                        *plugin._display_results,
-                    ]
                 return plugin._display_results
 
         # The wildcard keyword exists solely to normalize `ai:/add...` and

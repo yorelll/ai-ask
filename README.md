@@ -177,7 +177,7 @@ ai /add review 请检查这段代码
 
 | 输入 | 行为 |
 |---|---|
-| `ai <问题>` | 显示 Generate response；按 Enter 或点击才发送并开始流式回答；完成后选择 `Copy full answer` 并按 Enter 可复制完整回答 |
+| `ai <问题>` | 显示 Generate response；按 Enter 或点击才发送并开始流式回答；第一项 `Copy full answer` 可 Enter 复制完整回答，第二项仅显示单行摘要，点击不会关闭 Flow |
 | `ai /stop` | 取消当前生成 |
 | `ai /clear` | 清空当前 session 最近回答并停止生成 |
 | `ai /last` | 显示最近回答；Enter 或 `Ctrl+C` 复制 |

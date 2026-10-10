@@ -177,9 +177,10 @@ async def main() -> int:
         assert "stdlib_ok" in rendered, "stdlib SSE response missing expected answer"
         assert "error" not in rendered, "stream produced an error result"
 
-        copy_result = next(
-            item for item in displayed if item.get("title") == "Copy full answer"
-        )
+        assert displayed[0].get("title") == "Copy full answer"
+        assert displayed[1].get("title") == "Answer ready"
+        assert "stdlib_ok" in displayed[1].get("subTitle", "").lower()
+        copy_result = displayed[0]
         action = copy_result["jsonRPCAction"]
         action_response = await sim.request(action["method"], action.get("parameters", []))
         assert action_response.get("result", {}).get("hide") is True
