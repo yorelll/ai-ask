@@ -10,7 +10,6 @@ CPython 3.11 and a user's CPython 3.12+ interpreter.
 from __future__ import annotations
 
 import asyncio
-import html
 import json
 import logging
 import re
