@@ -35,6 +35,16 @@ public sealed class NativeSkillSettingsPanel : UserControl
         FlowPluginSettingsAccessor.Normalize(settings);
 
         var root = new DockPanel { Margin = new Thickness(12) };
+        var title = new TextBlock
+        {
+            Text = "AI Ask Settings",
+            FontSize = 18,
+            FontWeight = FontWeights.SemiBold,
+            Margin = new Thickness(0, 0, 0, 10)
+        };
+        DockPanel.SetDock(title, Dock.Top);
+        root.Children.Add(title);
+
         _error = new TextBlock
         {
             Foreground = System.Windows.Media.Brushes.Firebrick,
