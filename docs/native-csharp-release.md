@@ -10,13 +10,20 @@ The plugin manifest defines the user-visible version, for example:
 "Version": "1.0.0"
 ```
 
-The release workflow uses the technical automation tag:
+## Independent release tracks
 
-```text
-csharp-v1.0.0
-```
+The repository intentionally maintains two independent release tracks:
 
-The implementation language and automation tag are internal details; the user-visible GitHub release and archive are named simply:
+| Track | Automation tag format | Example | Purpose |
+|---|---|---|---|
+| Python implementation | `v<semver>` | `v0.0.2` | Existing Python release progression |
+| Managed implementation | `csharp-v<semver>` | `csharp-v0.0.1` | Independent managed-plugin release progression |
+
+The `csharp-v` prefix is an internal automation detail. It prevents a managed-plugin tag from overwriting a Python release with the same semantic version. It must remain separate even when both tracks use a similar version number.
+
+For example, a Python `v0.0.2` and a managed `csharp-v0.0.1` may coexist.
+
+The user-visible GitHub release and archive are named simply:
 
 ```text
 AI Ask v1.0.0
@@ -31,7 +38,7 @@ AIAsk-1.0.0.zip
 2. restores, builds, and tests the solution;
 3. stages the Flow plugin manifest, executable DLL, managed dependencies, and images;
 4. verifies staging and ZIP contents;
-5. publishes the `AI Ask` GitHub release on a matching `csharp-v<version>` tag.
+5. publishes the `AI Ask` GitHub release on the managed track's matching `csharp-v<version>` automation tag.
 
 A manual workflow run performs packaging validation by default. It only publishes
 when the operator explicitly sets its `publish` input to `true`.
