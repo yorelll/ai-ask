@@ -22,5 +22,6 @@ flogin.log
 .DS_Store
 Thumbs.db
 
-# Local planning artifacts
+# Local planning artifacts and Claude worktrees
 task/
+.claude/
