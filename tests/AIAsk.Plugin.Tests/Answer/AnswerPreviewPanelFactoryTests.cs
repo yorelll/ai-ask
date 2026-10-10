@@ -7,6 +7,17 @@ namespace AIAsk.Plugin.Tests.Answer;
 
 public sealed class AnswerPreviewPanelFactoryTests
 {
+    private sealed class RecordingClipboard : IAnswerClipboard
+    {
+        public string? CopiedText { get; private set; }
+        public bool Result { get; set; } = true;
+
+        public bool TryCopy(string text)
+        {
+            CopiedText = text;
+            return Result;
+        }
+    }
     [Fact]
     public void Create_UsesSnapshotAnswerAndState()
     {
@@ -42,6 +53,38 @@ public sealed class AnswerPreviewPanelFactoryTests
         });
 
         Assert.Equal("copy this answer", answer);
+    }
+
+    [Fact]
+    public void CopyAll_UsesInjectedClipboard()
+    {
+        var clipboard = new RecordingClipboard();
+
+        var copied = RunOnSta(() =>
+        {
+            var panel = new AnswerPreviewPanel(clipboard);
+            panel.Update("copy this", "Completed");
+            panel.CopyAll();
+            return clipboard.CopiedText;
+        });
+
+        Assert.Equal("copy this", copied);
+    }
+
+    [Fact]
+    public void CopyAll_ClipboardFailureDoesNotThrow()
+    {
+        var clipboard = new RecordingClipboard { Result = false };
+
+        RunOnSta(() =>
+        {
+            var panel = new AnswerPreviewPanel(clipboard);
+            panel.Update("copy this", "Completed");
+            panel.CopyAll();
+            return true;
+        });
+
+        Assert.Equal("copy this", clipboard.CopiedText);
     }
 
     [Fact]
