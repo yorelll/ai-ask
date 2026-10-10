@@ -110,6 +110,7 @@ public sealed class OpenAiCompatibleChatClientTests
             Assert.Equal("ok", request.Headers.GetValues("X-Skill-1").Single());
             Assert.DoesNotContain(request.Headers, header => header.Key == "Bad Header");
             Assert.DoesNotContain(request.Headers, header => header.Key.Contains("Newline", StringComparison.Ordinal));
+            Assert.DoesNotContain(request.Headers, header => header.Key is "X-Crlf" or "X-Nul" or "X-Del" or "X-Tab");
             return Task.FromResult(SseResponse("data: [DONE]\n\n"));
         });
         using var httpClient = new HttpClient(handler);
@@ -118,7 +119,11 @@ public sealed class OpenAiCompatibleChatClientTests
         {
             ["X-Skill-1"] = "ok",
             ["Bad Header"] = "bad",
-            ["X-Newline\r\nInjected"] = "bad"
+            ["X-Newline\r\nInjected"] = "bad",
+            ["X-Crlf"] = "line\r\nbreak",
+            ["X-Nul"] = "zero\0byte",
+            ["X-Del"] = "delete\x7Fbyte",
+            ["X-Tab"] = "tab\tbyte"
         });
 
         var chunks = await CollectAsync(client.StreamAsync(request));
