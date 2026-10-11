@@ -1,3 +1,6 @@
+using System.Reflection;
+using AIAsk.Plugin.Settings;
+using AIAsk.Plugin.Skills;
 using Flow.Launcher.Plugin;
 using Xunit;
 
@@ -39,21 +42,17 @@ public sealed class MainTests
     [Theory]
     [InlineData("ai:/add:translate:question")]
     [InlineData("ai：/add：translate：question")]
-    public async Task QueryAsync_CompactDynamicAdd_ReturnsSendResult(string compactQuery)
+    public async Task QueryAsync_CompactDynamicAdd_RoutesToDynamicCommand(string compactQuery)
     {
-        var plugin = new Main();
-        var query = new Query
-        {
-            ActionKeyword = string.Empty,
-            Search = compactQuery,
-            OriginalQuery = compactQuery,
-            TrimmedQuery = compactQuery
-        };
+        var plugin = CreateConfiguredPlugin();
+        SetPrivateField(plugin, "_skills", new SkillRepository(
+            AppContext.BaseDirectory,
+            Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))));
 
-        var results = await plugin.QueryAsync(query, CancellationToken.None);
+        var results = await plugin.QueryAsync(CreateGlobalQuery(compactQuery), CancellationToken.None);
 
         var result = Assert.Single(results);
-        Assert.Equal("Generate response", result.Title);
+        Assert.Equal("Dynamic skill error", result.Title);
     }
 
     [Theory]
@@ -63,17 +62,50 @@ public sealed class MainTests
     public async Task QueryAsync_CompactGlobalRoute_DoesNotClaimUnrelatedText(string foreignQuery)
     {
         var plugin = new Main();
-        var query = new Query
-        {
-            ActionKeyword = string.Empty,
-            Search = foreignQuery,
-            OriginalQuery = foreignQuery,
-            TrimmedQuery = foreignQuery
-        };
 
-        var results = await plugin.QueryAsync(query, CancellationToken.None);
+        var results = await plugin.QueryAsync(CreateGlobalQuery(foreignQuery), CancellationToken.None);
 
         Assert.Empty(results);
     }
 
+    private static Query CreateGlobalQuery(string text) => new()
+    {
+        ActionKeyword = string.Empty,
+        Search = text,
+        OriginalQuery = text,
+        TrimmedQuery = text,
+        SearchTerms = text.Split(Query.TermSeparator, StringSplitOptions.RemoveEmptyEntries)
+    };
+
+    private static Main CreateConfiguredPlugin()
+    {
+        var settings = new TestSettingsAccessor
+        {
+            Current = new AIAskPluginSettings
+            {
+                BaseUrl = "https://example.invalid/v1",
+                ApiKey = "test-key"
+            }
+        };
+        return new Main(new Answer.AnswerSession(), new ThrowingChatClientFactory(), settings);
+    }
+
+    private static void SetPrivateField<T>(Main plugin, string name, T value)
+    {
+        var field = typeof(Main).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        field!.SetValue(plugin, value);
+    }
+
+    private sealed class TestSettingsAccessor : IPluginSettingsAccessor
+    {
+        public AIAskPluginSettings Current { get; set; } = new();
+        public void Save() { }
+    }
+
+    private sealed class ThrowingChatClientFactory : Main.IChatClientFactory
+    {
+        public Chat.OpenAiCompatibleChatClient Create() =>
+            throw new InvalidOperationException("Chat must not start during query routing tests.");
+    }
 }
