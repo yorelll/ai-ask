@@ -1,4 +1,6 @@
 using System.Reflection;
+using AIAsk.Plugin.Answer;
+using AIAsk.Plugin.Chat;
 using AIAsk.Plugin.Settings;
 using AIAsk.Plugin.Skills;
 using Flow.Launcher.Plugin;
@@ -87,7 +89,7 @@ public sealed class MainTests
                 ApiKey = "test-key"
             }
         };
-        return new Main(new Answer.AnswerSession(), new ThrowingChatClientFactory(), settings);
+        return new Main(new AnswerSession(), new ThrowingChatClientFactory(), settings);
     }
 
     private static void SetPrivateField<T>(Main plugin, string name, T value)
@@ -105,7 +107,7 @@ public sealed class MainTests
 
     private sealed class ThrowingChatClientFactory : Main.IChatClientFactory
     {
-        public Chat.OpenAiCompatibleChatClient Create() =>
+        public OpenAiCompatibleChatClient Create() =>
             throw new InvalidOperationException("Chat must not start during query routing tests.");
     }
 }
