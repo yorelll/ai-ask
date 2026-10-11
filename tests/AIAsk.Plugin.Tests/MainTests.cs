@@ -55,6 +55,7 @@ public sealed class MainTests
 
         var result = Assert.Single(results);
         Assert.Equal("Dynamic skill error", result.Title);
+        Assert.DoesNotContain("configuration", result.Title, StringComparison.OrdinalIgnoreCase);
     }
 
     [Theory]

@@ -149,7 +149,10 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingP
 
     private bool TryHandleCommand(Query query, string raw, out List<Result> results)
     {
-        var command = raw.Split((char[]?)null, 2, StringSplitOptions.RemoveEmptyEntries)[0];
+        // Compact forms arrive as /add:alias:prompt or /add：alias：prompt.
+        // Treat either colon as a command separator without altering the rest
+        // of the dynamic-skill parser's prompt text.
+        var command = raw.Split(new[] { ' ', ':', '：' }, 2, StringSplitOptions.RemoveEmptyEntries)[0];
         switch (command.ToLowerInvariant())
         {
             case "/stop":
