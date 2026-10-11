@@ -30,7 +30,7 @@ jobs:
         id: version
         shell: pwsh
         run: |
-          $manifest = Get-Content "src/AIAsk.Plugin/plugin.json" -Raw | ConvertFrom-Json
+          $manifest = Get-Content "plugin.json" -Raw | ConvertFrom-Json
           if ($manifest.Language -ne "csharp") {
             Write-Error "Release manifest requires Language=csharp."
             exit 1
@@ -76,7 +76,7 @@ jobs:
           }
 
           Copy-Item "$output/*" $stage -Recurse -Force
-          Copy-Item "src/AIAsk.Plugin/plugin.json" (Join-Path $stage "plugin.json") -Force
+          Copy-Item "plugin.json" (Join-Path $stage "plugin.json") -Force
           Copy-Item "Images" (Join-Path $stage "Images") -Recurse -Force
 
           "stage=$stage" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8

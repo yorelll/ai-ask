@@ -8,6 +8,9 @@ on:
     paths:
       - "src/**"
       - "tests/**"
+      - "Images/**"
+      - "plugin.json"
+      - "README.md"
       - "AIAsk.CSharp.sln"
       - "Directory.Build.props"
       - ".github/workflows/csharp-ci.yml"
@@ -15,6 +18,9 @@ on:
     paths:
       - "src/**"
       - "tests/**"
+      - "Images/**"
+      - "plugin.json"
+      - "README.md"
       - "AIAsk.CSharp.sln"
       - "Directory.Build.props"
       - ".github/workflows/csharp-ci.yml"
