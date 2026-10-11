@@ -70,14 +70,25 @@ public sealed class MainTests
         Assert.Empty(results);
     }
 
-    private static Query CreateGlobalQuery(string text) => new()
+    private static Query CreateGlobalQuery(string text)
     {
-        ActionKeyword = string.Empty,
-        Search = text,
-        OriginalQuery = text,
-        TrimmedQuery = text,
-        SearchTerms = text.Split(Query.TermSeparator, StringSplitOptions.RemoveEmptyEntries)
-    };
+        var query = new Query
+        {
+            ActionKeyword = string.Empty,
+            SearchTerms = text.Split(Query.TermSeparator, StringSplitOptions.RemoveEmptyEntries)
+        };
+        SetQueryProperty(query, nameof(Query.Search), text);
+        SetQueryProperty(query, nameof(Query.OriginalQuery), text);
+        SetQueryProperty(query, nameof(Query.TrimmedQuery), text);
+        return query;
+    }
+
+    private static void SetQueryProperty(Query query, string propertyName, string value)
+    {
+        var property = typeof(Query).GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public);
+        Assert.NotNull(property);
+        property!.SetValue(query, value);
+    }
 
     private static Main CreateConfiguredPlugin()
     {
