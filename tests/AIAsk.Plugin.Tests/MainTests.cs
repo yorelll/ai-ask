@@ -36,4 +36,44 @@ public sealed class MainTests
         Assert.Empty(results);
     }
 
+    [Theory]
+    [InlineData("ai:/add:translate:question")]
+    [InlineData("ai：/add：translate：question")]
+    public async Task QueryAsync_CompactDynamicAdd_ReturnsSendResult(string compactQuery)
+    {
+        var plugin = new Main();
+        var query = new Query
+        {
+            ActionKeyword = string.Empty,
+            Search = compactQuery,
+            OriginalQuery = compactQuery,
+            TrimmedQuery = compactQuery
+        };
+
+        var results = await plugin.QueryAsync(query, CancellationToken.None);
+
+        var result = Assert.Single(results);
+        Assert.Equal("Generate response", result.Title);
+    }
+
+    [Theory]
+    [InlineData("calc 1+2")]
+    [InlineData("open chrome")]
+    [InlineData("aix:/add:translate:question")]
+    public async Task QueryAsync_CompactGlobalRoute_DoesNotClaimUnrelatedText(string foreignQuery)
+    {
+        var plugin = new Main();
+        var query = new Query
+        {
+            ActionKeyword = string.Empty,
+            Search = foreignQuery,
+            OriginalQuery = foreignQuery,
+            TrimmedQuery = foreignQuery
+        };
+
+        var results = await plugin.QueryAsync(query, CancellationToken.None);
+
+        Assert.Empty(results);
+    }
+
 }
