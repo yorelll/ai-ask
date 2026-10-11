@@ -58,7 +58,7 @@ jobs:
       - name: Verify staged release artifact
         shell: pwsh
         run: |
-          $manifest = Get-Content "src/AIAsk.Plugin/plugin.json" -Raw | ConvertFrom-Json
+          $manifest = Get-Content "plugin.json" -Raw | ConvertFrom-Json
           ./scripts/verify-csharp-release.ps1 `
             -StageDirectory "${{ steps.stage.outputs.stage }}" `
             -ExpectedVersion "$($manifest.Version)"
