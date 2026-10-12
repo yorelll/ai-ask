@@ -2,6 +2,9 @@ using System.Collections.ObjectModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
+using System.Windows.Input;
+using System.Windows.Markup;
+using System.Windows.Media;
 using Microsoft.Win32;
 
 namespace AIAsk.Plugin.Settings;
@@ -96,6 +99,11 @@ public sealed class NativeSkillSettingsPanel : UserControl
         IPluginSettingsAccessor pluginSettings) =>
         new NativeSkillSettingsPanel(skillController, pluginSettings);
 
+    // Internal test seams: the UI behavior is otherwise exercised on STA in CI.
+    internal DataGrid SkillsGrid => _grid;
+
+    internal IReadOnlyList<SkillSettingsRow> SkillRows => _rows;
+
     public void ReloadSkills()
     {
         try
@@ -137,6 +145,11 @@ public sealed class NativeSkillSettingsPanel : UserControl
         return grid;
     }
 
+    /// <summary>
+    /// File-manager inspired Skill list: single full-row selection, no current
+    /// cell focus visuals, a closed outer border, and a left selected-row bar.
+    /// The style belongs to the DataGrid row/container—not individual cells.
+    /// </summary>
     private DataGrid CreateGrid()
     {
         var grid = new DataGrid
@@ -144,55 +157,78 @@ public sealed class NativeSkillSettingsPanel : UserControl
             AutoGenerateColumns = false,
             CanUserAddRows = false,
             CanUserDeleteRows = false,
-            IsReadOnly = false,
+            IsReadOnly = true,
             ItemsSource = _rows,
             SelectionMode = DataGridSelectionMode.Single,
+            SelectionUnit = DataGridSelectionUnit.FullRow,
+            GridLinesVisibility = DataGridGridLinesVisibility.None,
+            BorderBrush = Brush("#E2E2E2"),
+            BorderThickness = new Thickness(1),
+            Background = Brushes.White,
+            RowBackground = Brushes.White,
+            AlternatingRowBackground = Brushes.White,
+            HorizontalGridLinesBrush = Brush("#ECECEC"),
+            VerticalGridLinesBrush = Brushes.Transparent,
+            HeadersVisibility = DataGridHeadersVisibility.Column,
             MinHeight = 240
         };
-        grid.Columns.Add(new DataGridTextColumn
-        {
-            Header = "Alias",
-            Binding = new Binding(nameof(SkillSettingsRow.Alias)),
-            IsReadOnly = true,
-            Width = new DataGridLength(1, DataGridLengthUnitType.Star)
-        });
-        grid.Columns.Add(new DataGridTextColumn
-        {
-            Header = "Path",
-            Binding = new Binding(nameof(SkillSettingsRow.Path)),
-            IsReadOnly = true,
-            Width = new DataGridLength(3, DataGridLengthUnitType.Star)
-        });
-        grid.Columns.Add(new DataGridCheckBoxColumn
-        {
-            Header = "Global",
-            Binding = new Binding(nameof(SkillSettingsRow.IsGlobal))
-            {
-                Mode = BindingMode.TwoWay,
-                UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged
-            },
-            Width = DataGridLength.Auto
-        });
-        grid.Columns.Add(new DataGridTextColumn
-        {
-            Header = "Status",
-            Binding = new Binding(nameof(SkillSettingsRow.Status)),
-            IsReadOnly = true,
-            Width = DataGridLength.Auto
-        });
-        grid.CellEditEnding += OnCellEditEnding;
+        grid.Resources.Add(typeof(DataGridCell), CreateCellStyle());
+        grid.Resources.Add(typeof(DataGridRow), CreateRowStyle());
+        grid.Resources.Add(typeof(DataGridColumnHeader), CreateHeaderStyle());
+        grid.PreviewMouseLeftButtonDown += SelectRowBeforeCellFocus;
+        grid.Columns.Add(CreateTextColumn("Alias", nameof(SkillSettingsRow.Alias), 1));
+        grid.Columns.Add(CreateTextColumn("Path", nameof(SkillSettingsRow.Path), 3));
+        grid.Columns.Add(CreateGlobalColumn());
+        grid.Columns.Add(CreateTextColumn("Status", nameof(SkillSettingsRow.Status), width: null));
         return grid;
     }
 
-    private void OnCellEditEnding(object? sender, DataGridCellEditEndingEventArgs args)
+    private DataGridTextColumn CreateTextColumn(string header, string property, double? width)
     {
-        if (args.EditAction != DataGridEditAction.Commit ||
-            args.Row.Item is not SkillSettingsRow row ||
-            args.Column.Header?.ToString() != "Global")
+        return new DataGridTextColumn
+        {
+            Header = header,
+            Binding = new Binding(property),
+            IsReadOnly = true,
+            Width = width is null ? DataGridLength.Auto : new DataGridLength(width.Value, DataGridLengthUnitType.Star),
+            ElementStyle = TransparentTextStyle()
+        };
+    }
+
+    private DataGridTemplateColumn CreateGlobalColumn()
+    {
+        var column = new DataGridTemplateColumn { Header = "Global", Width = DataGridLength.Auto };
+        var template = new DataTemplate();
+        var checkBox = new FrameworkElementFactory(typeof(CheckBox));
+        checkBox.SetBinding(ToggleButton.IsCheckedProperty, new Binding(nameof(SkillSettingsRow.IsGlobal))
+        {
+            Mode = BindingMode.TwoWay,
+            UpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged
+        });
+        checkBox.SetValue(HorizontalAlignmentProperty, HorizontalAlignment.Center);
+        checkBox.SetValue(VerticalAlignmentProperty, VerticalAlignment.Center);
+        checkBox.AddHandler(CheckBox.ClickEvent, new RoutedEventHandler(OnGlobalCheckBoxClick));
+        template.VisualTree = checkBox;
+        column.CellTemplate = template;
+        return column;
+    }
+
+    private void SelectRowBeforeCellFocus(object sender, MouseButtonEventArgs args)
+    {
+        if (FindParent<DataGridRow>(args.OriginalSource as DependencyObject) is { } row)
+        {
+            _grid.SelectedItem = row.Item;
+        }
+    }
+
+    private void OnGlobalCheckBoxClick(object sender, RoutedEventArgs args)
+    {
+        if (FindParent<DataGridRow>(sender as DependencyObject) is not { Item: SkillSettingsRow row })
         {
             return;
         }
 
+        _grid.SelectedItem = row;
         Dispatcher.BeginInvoke(() =>
         {
             var result = _skillController.SetGlobal(row.Alias, row.IsGlobal);
@@ -202,6 +238,94 @@ public sealed class NativeSkillSettingsPanel : UserControl
             }
             ReloadSkills();
         });
+    }
+
+    private static Style CreateCellStyle()
+    {
+        var style = new Style(typeof(DataGridCell));
+        style.Setters.Add(new Setter(BackgroundProperty, Brushes.Transparent));
+        style.Setters.Add(new Setter(BorderBrushProperty, Brushes.Transparent));
+        style.Setters.Add(new Setter(BorderThicknessProperty, new Thickness(0)));
+        style.Setters.Add(new Setter(FocusVisualStyleProperty, null));
+        style.Setters.Add(new Setter(IsTabStopProperty, false));
+        style.Setters.Add(new Setter(PaddingProperty, new Thickness(12, 0, 12, 0)));
+        return style;
+    }
+
+    private static Style CreateRowStyle()
+    {
+        var style = new Style(typeof(DataGridRow));
+        style.Setters.Add(new Setter(BackgroundProperty, Brushes.White));
+        style.Setters.Add(new Setter(ForegroundProperty, Brush("#222222")));
+        style.Setters.Add(new Setter(BorderBrushProperty, Brush("#ECECEC")));
+        style.Setters.Add(new Setter(BorderThicknessProperty, new Thickness(0, 0, 0, 1)));
+        style.Setters.Add(new Setter(FocusVisualStyleProperty, null));
+        style.Setters.Add(new Setter(TemplateProperty, CreateRowTemplate()));
+        return style;
+    }
+
+    private static ControlTemplate CreateRowTemplate()
+    {
+        const string markup = """
+            <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                             TargetType="{x:Type DataGridRow}">
+              <Border x:Name="RowBorder" Background="{TemplateBinding Background}"
+                      BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
+                <Grid>
+                  <Border x:Name="SelectionBar" Width="3" Background="#A87520" HorizontalAlignment="Left" Visibility="Collapsed" />
+                  <DataGridCellsPresenter />
+                </Grid>
+              </Border>
+              <ControlTemplate.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                  <Setter TargetName="RowBorder" Property="Background" Value="#F7F7F7" />
+                </Trigger>
+                <Trigger Property="IsSelected" Value="True">
+                  <Setter TargetName="RowBorder" Property="Background" Value="#F1F1F1" />
+                  <Setter TargetName="SelectionBar" Property="Visibility" Value="Visible" />
+                </Trigger>
+              </ControlTemplate.Triggers>
+            </ControlTemplate>
+            """;
+        return (ControlTemplate)XamlReader.Parse(markup);
+    }
+
+    private static Style CreateHeaderStyle()
+    {
+        var style = new Style(typeof(DataGridColumnHeader));
+        style.Setters.Add(new Setter(BackgroundProperty, Brush("#FAFAFA")));
+        style.Setters.Add(new Setter(ForegroundProperty, Brush("#666666")));
+        style.Setters.Add(new Setter(BorderBrushProperty, Brush("#E2E2E2")));
+        style.Setters.Add(new Setter(BorderThicknessProperty, new Thickness(0, 0, 0, 1)));
+        style.Setters.Add(new Setter(FocusVisualStyleProperty, null));
+        style.Setters.Add(new Setter(PaddingProperty, new Thickness(12, 8, 12, 8)));
+        return style;
+    }
+
+    private static Style TransparentTextStyle()
+    {
+        var style = new Style(typeof(TextBlock));
+        style.Setters.Add(new Setter(BackgroundProperty, Brushes.Transparent));
+        style.Setters.Add(new Setter(ForegroundProperty, Brush("#222222")));
+        style.Setters.Add(new Setter(VerticalAlignmentProperty, VerticalAlignment.Center));
+        return style;
+    }
+
+    private static Brush Brush(string value) =>
+        (Brush)new BrushConverter().ConvertFromString(value)!;
+
+    private static T? FindParent<T>(DependencyObject? source) where T : DependencyObject
+    {
+        while (source is not null)
+        {
+            if (source is T parent)
+            {
+                return parent;
+            }
+            source = VisualTreeHelper.GetParent(source);
+        }
+        return null;
     }
 
     private void SaveApiSettings()
