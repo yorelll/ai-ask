@@ -56,6 +56,23 @@ public sealed class AnswerPreviewPanelFactoryTests
     }
 
     [Fact]
+    public void CreateLive_ReturnsNativePreviewPanelWithCurrentAnswer()
+    {
+        var session = new AnswerSession();
+        var generation = session.Begin("question");
+        session.Append(generation, "streamed answer");
+
+        var answer = RunOnSta(() =>
+        {
+            Lazy<UserControl> preview = new AnswerPreviewPanelFactory().CreateLive(session);
+            var panel = Assert.IsType<AnswerPreviewPanel>(preview.Value);
+            return panel.AnswerText;
+        });
+
+        Assert.Equal("streamed answer", answer);
+    }
+
+    [Fact]
     public void CopyAll_UsesInjectedClipboard()
     {
         var clipboard = new RecordingClipboard();

@@ -474,6 +474,7 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingP
         if (!string.IsNullOrWhiteSpace(feedback))
         {
             _session.MarkReady(feedback);
+            _context?.API.BackToQueryResults();
         }
         return hideAfterAction;
     }
@@ -482,6 +483,7 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingP
     {
         var stopped = StopActiveGeneration();
         _session.MarkReady(stopped ? "Generation stopped." : "No generation is active.");
+        _context?.API.BackToQueryResults();
         return false;
     }
 
@@ -489,6 +491,7 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingP
     {
         _ = ClearAnswer();
         _session.MarkReady("Answer cleared.");
+        _context?.API.BackToQueryResults();
         return false;
     }
 
