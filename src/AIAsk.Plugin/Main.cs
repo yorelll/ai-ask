@@ -194,9 +194,20 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingP
                 .ToList();
         }
 
-        return TryCreateRequest(raw, out var request, out var error)
-            ? [CreateSendResult(query, request)]
-            : [CreateResult("Dynamic skill error", error, ErrorIcon)];
+        if (TryCreateRequest(raw, out var request, out var error))
+        {
+            return [CreateSendResult(query, request)];
+        }
+
+        // Selecting a picker item rewrites the query to `ai /add <alias> `.
+        // Flow immediately re-queries that text before the user types a prompt;
+        // it is a prompt-ready state, not a dynamic-skill error or a chat send.
+        if (TryGetPromptReadyDynamicSkill(raw, repository, out var alias))
+        {
+            return [CreateResult("Enter a prompt", $"Type a question for {alias}.", DefaultIcon)];
+        }
+
+        return [CreateResult("Dynamic skill error", error, ErrorIcon)];
     }
 
     private bool SelectDynamicSkill(string alias)
@@ -206,6 +217,34 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingP
         // networking because /add without a prompt only renders the picker.
         _context?.API.ChangeQuery($"ai /add {alias} ", requery: false);
         return false;
+    }
+
+    private static bool TryGetPromptReadyDynamicSkill(
+        string raw,
+        SkillRepository repository,
+        out string alias)
+    {
+        alias = string.Empty;
+        if (!raw.StartsWith("/add", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var remainder = raw.Length <= 4 ? string.Empty : raw[4..].Trim();
+        if (string.IsNullOrEmpty(remainder) || remainder.Contains(' ') || remainder.Contains(':') || remainder.Contains('：'))
+        {
+            return false;
+        }
+
+        var skill = repository.Load().SingleOrDefault(item =>
+            string.Equals(item.Alias, remainder, StringComparison.OrdinalIgnoreCase));
+        if (skill is null || !repository.Validate(skill).IsValid)
+        {
+            return false;
+        }
+
+        alias = skill.Alias;
+        return true;
     }
 
     private bool TryCreateRequest(string raw, out PendingRequest request, out string error)

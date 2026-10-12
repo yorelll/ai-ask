@@ -207,6 +207,14 @@ public sealed class MainTests
             var actionResult = skillResult.Action(new ActionContext());
 
             Assert.False(actionResult);
+
+            // Flow re-queries the auto-filled text before the user types the
+            // prompt. That state must stay prompt-ready rather than erroring
+            // or starting network work.
+            var refilled = await plugin.QueryAsync(CreateAiQuery("/add translate"), CancellationToken.None);
+            var promptReady = Assert.Single(refilled);
+            Assert.Equal("Enter a prompt", promptReady.Title);
+            Assert.Contains("translate", promptReady.SubTitle, StringComparison.OrdinalIgnoreCase);
         }
         finally
         {
