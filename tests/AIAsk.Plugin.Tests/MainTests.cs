@@ -132,7 +132,7 @@ public sealed class MainTests
             repository.Add("translate", skillPath, global: false);
 
             var results = await plugin.QueryAsync(CreateAiQuery("/add"), CancellationToken.None);
-            var skillResult = Assert.Single(results.Where(result => result.Title == "translate"));
+            var skillResult = Assert.Single(results, result => result.Title == "translate");
 
             var actionResult = skillResult.Action(new ActionContext());
 
