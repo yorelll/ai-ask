@@ -228,9 +228,10 @@ public sealed class MainTests
 
         Assert.Equal("Answer ready", results[0].Title);
         Assert.NotNull(results[0].PreviewPanel);
-        // Flow.Launcher.Plugin 5.3.2 does not expose PreviewVisibility.
-        // PreviewPanel + a non-hiding result action are the supported contract.
-        Assert.False(results[0].Action(new ActionContext()));
+        // The explicit native-window action creates WPF controls, so invoke it
+        // on an STA thread. Flow invokes result actions on its UI STA thread.
+        var hides = RunOnSta(() => results[0].Action(new ActionContext()));
+        Assert.False(hides);
         Assert.Equal("Copy full answer", results[1].Title);
     }
 
@@ -239,6 +240,33 @@ public sealed class MainTests
         var method = typeof(Main).GetMethod("BuildAnswerResults", BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(method);
         return Assert.IsType<List<Result>>(method!.Invoke(plugin, [snapshot]));
+    }
+
+    private static T RunOnSta<T>(Func<T> callback)
+    {
+        T? result = default;
+        Exception? error = null;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                result = callback();
+            }
+            catch (Exception exception)
+            {
+                error = exception;
+            }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+
+        if (error is not null)
+        {
+            throw error;
+        }
+
+        return result!;
     }
 
     private static T GetPrivateField<T>(Main plugin, string name)
