@@ -90,7 +90,7 @@ public sealed class MainTests
         SetPrivateField(plugin, "_skills", repository);
 
         var results = await plugin.QueryAsync(CreateAiQuery("/add"), CancellationToken.None);
-        var picker = Assert.Single(results.Where(result => result.Title == "trns"));
+        var picker = Assert.Single(results, result => result.Title == "trns");
 
         var hide = picker.Action!(new ActionContext());
 
