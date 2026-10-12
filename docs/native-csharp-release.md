@@ -7,7 +7,7 @@ The release workflow creates an **AI Ask** plugin archive for Flow Launcher.
 The plugin manifest defines the user-visible version, for example:
 
 ```json
-"Version": "0.0.1"
+"Version": "0.0.2"
 ```
 
 ## Independent release tracks
@@ -17,17 +17,17 @@ The repository intentionally maintains two independent release tracks:
 | Track | Automation tag format | Example | Purpose |
 |---|---|---|---|
 | Python implementation | `v<semver>` | `v0.0.2` | Existing Python release progression |
-| Managed implementation | `csharp-v<semver>` | `csharp-v0.0.1` | Independent managed-plugin release progression |
+| Managed implementation | `csharp-v<semver>` | `csharp-v0.0.2` | Independent managed-plugin release progression |
 
 The `csharp-v` prefix is an internal automation detail. It prevents a managed-plugin tag from overwriting a Python release with the same semantic version. It must remain separate even when both tracks use a similar version number.
 
-For example, a Python `v0.0.2` and a managed `csharp-v0.0.1` may coexist.
+For example, a Python `v0.0.2` and a managed `csharp-v0.0.2` may coexist.
 
 The user-visible GitHub release and archive are named simply:
 
 ```text
-AI Ask v0.0.1
-AIAsk-0.0.1.zip
+AI Ask v0.0.2
+AIAsk-0.0.2.zip
 ```
 
 ## Publish flow

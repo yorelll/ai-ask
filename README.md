@@ -120,7 +120,7 @@ C# tag:     csharp-v<semver>
 
 ```text
 Python: v0.0.2
-C#:     csharp-v0.0.1
+C#:     csharp-v0.0.2
 ```
 
 `csharp-v` 仅用于 Git/CI 自动化，避免覆盖 Python 的同版本 tag。用户可见名称始终使用正常产品名称：

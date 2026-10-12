@@ -5,7 +5,7 @@
   "Name": "AI Ask",
   "Description": "AI Ask plugin with settings, skills, streaming, and answer preview",
   "Author": "yorelll",
-  "Version": "0.0.1",
+  "Version": "0.0.2",
   "Language": "csharp",
   "Website": "https://github.com/yorelll/ai-ask",
   "IcoPath": "Images\\plugin.png",
