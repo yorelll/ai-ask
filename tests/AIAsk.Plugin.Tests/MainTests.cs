@@ -117,6 +117,68 @@ public sealed class MainTests
         public void Save() { }
     }
 
+    [Fact]
+    public async Task QueryAsync_DynamicPicker_SelectActionRefillsQueryWithAlias()
+    {
+        var plugin = CreateConfiguredPlugin();
+        var skillPath = Path.Combine(AppContext.BaseDirectory, "picker-skill.md");
+        await File.WriteAllTextAsync(skillPath, "temporary skill");
+        try
+        {
+            SetPrivateField(plugin, "_skills", new SkillRepository(
+                AppContext.BaseDirectory,
+                Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"))));
+            var repository = GetPrivateField<SkillRepository>(plugin, "_skills");
+            repository.Add("translate", skillPath, global: false);
+
+            var results = await plugin.QueryAsync(CreateAiQuery("/add"), CancellationToken.None);
+            var skillResult = Assert.Single(results.Where(result => result.Title == "translate"));
+
+            var actionResult = skillResult.Action(new ActionContext());
+
+            Assert.False(actionResult);
+        }
+        finally
+        {
+            File.Delete(skillPath);
+        }
+    }
+
+    [Fact]
+    public async Task AnswerResults_PutPreviewBeforeCopyResult()
+    {
+        var session = new AnswerSession();
+        var plugin = new Main(session, new ThrowingChatClientFactory(), new TestSettingsAccessor());
+        session.Begin("prompt");
+        session.Append(session.Snapshot().Generation, "answer text");
+        session.Complete(session.Snapshot().Generation);
+
+        var results = await plugin.QueryAsync(CreateAiQuery("/last"), CancellationToken.None);
+
+        Assert.Single(results);
+        Assert.Equal("Copy full answer", results[0].Title);
+    }
+
+    private static Query CreateAiQuery(string search)
+    {
+        var query = new Query
+        {
+            ActionKeyword = "ai",
+            SearchTerms = search.Split(Query.TermSeparator, StringSplitOptions.RemoveEmptyEntries)
+        };
+        SetQueryProperty(query, nameof(Query.Search), search);
+        SetQueryProperty(query, nameof(Query.OriginalQuery), $"ai {search}");
+        SetQueryProperty(query, nameof(Query.TrimmedQuery), $"ai {search}");
+        return query;
+    }
+
+    private static T GetPrivateField<T>(Main plugin, string name)
+    {
+        var field = typeof(Main).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        return Assert.IsType<T>(field!.GetValue(plugin));
+    }
+
     private sealed class ThrowingChatClientFactory : Main.IChatClientFactory
     {
         public OpenAiCompatibleChatClient Create() =>

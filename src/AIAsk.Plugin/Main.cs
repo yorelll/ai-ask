@@ -97,13 +97,11 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingP
                 "Copy full answer",
                 "Copy the entire current answer to the clipboard",
                 AnswerIcon,
-                _ => CopyCurrentAnswer(hideAfterAction: false)),
-            CreateActionResult("Stop generation", "Cancel the active AI request", StopIcon, _ => StopActiveGeneration()),
+                _ => CopyCurrentAnswer(hideAfterAction: false, "Answer copied.")),
+            CreateActionResult("Stop generation", "Cancel the active AI request", StopIcon, _ =>
+                StopActiveGenerationWithFeedback()),
             CreateActionResult("Clear answer", "Clear the current answer session", ClearIcon, _ =>
-            {
-                ClearAnswer();
-                return false;
-            })
+                ClearAnswerWithFeedback())
         ];
     }
 
@@ -183,14 +181,27 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingP
         if (string.IsNullOrEmpty(remainder))
         {
             return repository.Load()
-                .Select(skill => CreateResult(skill.Alias, $"{(skill.Global ? "Global" : "Dynamic")} · {skill.Path}", DefaultIcon))
-                .Prepend(CreateResult("Choose a temporary skill", "Use /add <alias> <question>", DefaultIcon))
+                .Select(skill => CreateActionResult(
+                    skill.Alias,
+                    $"{(skill.Global ? "Global" : "Dynamic")} · Press Enter to add",
+                    DefaultIcon,
+                    _ => SelectDynamicSkill(skill.Alias)))
+                .Prepend(CreateResult("Choose a temporary skill", "Select a skill to insert it into /add.", DefaultIcon))
                 .ToList();
         }
 
         return TryCreateRequest(raw, out var request, out var error)
             ? [CreateSendResult(query, request)]
             : [CreateResult("Dynamic skill error", error, ErrorIcon)];
+    }
+
+    private bool SelectDynamicSkill(string alias)
+    {
+        // Flow's ChangeQuery immediately reruns the query, while the user can
+        // continue typing a prompt after the inserted alias. It does not start
+        // networking because /add without a prompt only renders the picker.
+        _context?.API.ChangeQuery($"ai /add {alias} ", requery: false);
+        return false;
     }
 
     private bool TryCreateRequest(string raw, out PendingRequest request, out string error)
@@ -416,10 +427,6 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingP
     private List<Result> BuildAnswerResults(AnswerSessionSnapshot snapshot)
     {
         var results = new List<Result>();
-        if (snapshot.CanCopy)
-        {
-            results.Add(CreateCopyResult("Copy full answer", "Enter copies the complete answer.", snapshot.Answer, AnswerIcon));
-        }
 
         var title = snapshot.State switch
         {
@@ -443,19 +450,44 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingP
         {
             answerResult.PreviewPanel = _previewFactory.CreateLive(_session);
         }
+        // The answer/summary is the primary result. It opens Flow's native
+        // selectable preview; copying the complete text is a secondary action.
         results.Add(answerResult);
+        if (snapshot.CanCopy)
+        {
+            results.Add(CreateCopyResult("Copy full answer", "Enter copies the complete answer.", snapshot.Answer, AnswerIcon));
+        }
         return results;
     }
 
-    private bool CopyCurrentAnswer(bool hideAfterAction)
+    private bool CopyCurrentAnswer(bool hideAfterAction, string? feedback = null)
     {
         var text = _session.CurrentAnswer();
         if (string.IsNullOrEmpty(text))
         {
+            _session.MarkReady("No answer available to copy.");
             return false;
         }
         _context?.API.CopyToClipboard(text);
+        if (!string.IsNullOrWhiteSpace(feedback))
+        {
+            _session.MarkReady(feedback);
+        }
         return hideAfterAction;
+    }
+
+    private bool StopActiveGenerationWithFeedback()
+    {
+        var stopped = StopActiveGeneration();
+        _session.MarkReady(stopped ? "Generation stopped." : "No generation is active.");
+        return false;
+    }
+
+    private bool ClearAnswerWithFeedback()
+    {
+        _ = ClearAnswer();
+        _session.MarkReady("Answer cleared.");
+        return false;
     }
 
     private Result CreateCopyResult(string title, string subtitle, string text, string icon) => CreateActionResult(
