@@ -119,7 +119,7 @@ public sealed class MainTests
     private static SkillRepository RequireSkills(Main plugin) =>
         (SkillRepository)typeof(Main).GetField("_skills", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(plugin)!;
 
-    private sealed class ChangeQueryRecordingApi : DispatchProxy
+    private class ChangeQueryRecordingApi : DispatchProxy
     {
         public string? LastQuery { get; private set; }
         public bool LastRequery { get; private set; }
