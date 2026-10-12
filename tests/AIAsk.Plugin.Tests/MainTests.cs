@@ -71,6 +71,76 @@ public sealed class MainTests
         Assert.Empty(results);
     }
 
+    [Fact]
+    public async Task QueryAsync_BareAdd_SkillActionFillsQueryWithoutStartingChat()
+    {
+        var plugin = CreateConfiguredPlugin();
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var skillPath = Path.Combine(root, "translate.md");
+        File.WriteAllText(skillPath, "Translate only.");
+
+        var (flowApi, recorder) = ChangeQueryRecordingApi.Create();
+        // The picker only needs Flow's public API for ChangeQuery; avoid
+        // depending on PluginMetadata's internal path setters in a unit test.
+        SetPrivateField(plugin, "_context", new PluginInitContext(null!, flowApi));
+
+        var repository = new SkillRepository(AppContext.BaseDirectory, root);
+        repository.Add("trns", skillPath, global: false);
+        SetPrivateField(plugin, "_skills", repository);
+
+        var results = await plugin.QueryAsync(CreateAiQuery("/add"), CancellationToken.None);
+        var picker = Assert.Single(results.Where(result => result.Title == "trns"));
+
+        var hide = picker.Action!(new ActionContext());
+
+        Assert.False(hide);
+        Assert.Equal("ai /add trns ", recorder.LastQuery);
+        Assert.False(recorder.LastRequery);
+        var session = (AnswerSession)plugin.GetType()
+            .GetField("_session", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(plugin)!;
+        Assert.Equal(AnswerSessionState.Draft, session.Snapshot().State);
+    }
+
+    private static Query CreateAiQuery(string search)
+    {
+        var query = new Query
+        {
+            ActionKeyword = "ai",
+            SearchTerms = search.Split(Query.TermSeparator, StringSplitOptions.RemoveEmptyEntries)
+        };
+        SetQueryProperty(query, nameof(Query.Search), search);
+        SetQueryProperty(query, nameof(Query.OriginalQuery), $"ai {search}");
+        SetQueryProperty(query, nameof(Query.TrimmedQuery), $"ai {search}");
+        return query;
+    }
+
+    private static SkillRepository RequireSkills(Main plugin) =>
+        (SkillRepository)typeof(Main).GetField("_skills", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(plugin)!;
+
+    private sealed class ChangeQueryRecordingApi : DispatchProxy
+    {
+        public string? LastQuery { get; private set; }
+        public bool LastRequery { get; private set; }
+
+        public static (IPublicAPI Api, ChangeQueryRecordingApi Recorder) Create()
+        {
+            var proxy = Create<IPublicAPI, ChangeQueryRecordingApi>();
+            return (proxy, (ChangeQueryRecordingApi)(object)proxy);
+        }
+
+        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
+        {
+            if (targetMethod?.Name == nameof(IPublicAPI.ChangeQuery))
+            {
+                LastQuery = (string?)args?[0];
+                LastRequery = args is { Length: > 1 } && args[1] is bool requery && requery;
+            }
+            return targetMethod?.ReturnType == typeof(bool) ? false : null;
+        }
+    }
+
     private static Query CreateGlobalQuery(string text)
     {
         var query = new Query
