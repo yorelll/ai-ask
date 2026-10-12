@@ -37,6 +37,7 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingP
     private SkillRepository? _skills;
     private SkillSettingsController? _skillSettingsController;
     private AnswerPreviewPanelFactory? _previewFactory;
+    private readonly AnswerWindowManager _answerWindowManager = new();
     private long _activeGeneration;
     private Query? _activeQuery;
 
@@ -452,7 +453,7 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingP
             // setting hides Result.PreviewPanel.
             Action = _ =>
             {
-                AnswerPreviewPanel.ShowInWindow(_session);
+                _answerWindowManager.Show(_session);
                 return false;
             }
         };

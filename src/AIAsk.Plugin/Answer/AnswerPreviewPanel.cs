@@ -85,30 +85,6 @@ public sealed class AnswerPreviewPanel : UserControl
         _ = _clipboard.TryCopy(_answerTextBox.Text);
     }
 
-    /// <summary>
-    /// Flow's public Result API has no PreviewVisibility property in the
-    /// supported package. When a result is explicitly activated, this method
-    /// opens the same native selectable panel in a modeless WPF window.
-    /// </summary>
-    public static void ShowInWindow(AnswerSession session)
-    {
-        ArgumentNullException.ThrowIfNull(session);
-        var preview = new AnswerPreviewPanelFactory().CreateLive(session).Value;
-        var window = new Window
-        {
-            Title = "AI Ask Answer",
-            Content = preview,
-            Width = 760,
-            Height = 560,
-            MinWidth = 420,
-            MinHeight = 280,
-            WindowStartupLocation = WindowStartupLocation.CenterScreen,
-            ShowInTaskbar = false
-        };
-        window.Show();
-        window.Activate();
-        _ = preview.Focus();
-    }
 }
 
 /// <summary>

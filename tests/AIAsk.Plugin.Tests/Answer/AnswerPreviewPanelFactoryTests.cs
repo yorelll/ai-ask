@@ -130,6 +130,50 @@ public sealed class AnswerPreviewPanelFactoryTests
         Assert.True(focusable);
     }
 
+    [Fact]
+    public void AnswerWindowManager_ReusesSingleWindowForSameSession()
+    {
+        var state = RunOnSta(() =>
+        {
+            var session = new AnswerSession();
+            var generation = session.Begin("question");
+            session.Append(generation, "first");
+            var manager = new AnswerWindowManager();
+            manager.Show(session);
+            var firstWindow = manager.CurrentWindow;
+            session.Append(generation, " second");
+            manager.Show(session);
+            var reused = ReferenceEquals(firstWindow, manager.CurrentWindow);
+            var answer = ((AnswerPreviewPanel)manager.CurrentWindow!.Content).AnswerText;
+            manager.CloseCurrent();
+            return (reused, answer, manager.CurrentWindow is null);
+        });
+
+        Assert.True(state.reused);
+        Assert.Equal("first second", state.answer);
+        Assert.True(state.Item3);
+    }
+
+    [Fact]
+    public void AnswerWindowManager_CreatesFreshWindowAfterClose()
+    {
+        var recreated = RunOnSta(() =>
+        {
+            var session = new AnswerSession();
+            session.Begin("question");
+            var manager = new AnswerWindowManager();
+            manager.Show(session);
+            var first = manager.CurrentWindow;
+            manager.CloseCurrent();
+            manager.Show(session);
+            var second = manager.CurrentWindow;
+            manager.CloseCurrent();
+            return !ReferenceEquals(first, second);
+        });
+
+        Assert.True(recreated);
+    }
+
     private static T RunOnSta<T>(Func<T> callback)
     {
         T? result = default;
