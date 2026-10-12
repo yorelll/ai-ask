@@ -447,9 +447,14 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingP
             Title = title,
             SubTitle = subtitle,
             IcoPath = snapshot.State is AnswerSessionState.Failed ? ErrorIcon : AnswerIcon,
-            // Keep Flow visible when the answer row is activated; PreviewPanel
-            // supplies the native selectable full-answer surface.
-            Action = _ => false
+            // Always open a modeless native WPF answer window on explicit
+            // activation. This is reliable even when Flow's global preview
+            // setting hides Result.PreviewPanel.
+            Action = _ =>
+            {
+                AnswerPreviewPanel.ShowInWindow(_session);
+                return false;
+            }
         };
         if (_previewFactory is not null)
         {

@@ -118,6 +118,18 @@ public sealed class AnswerPreviewPanelFactoryTests
         Assert.Equal("final", answer);
     }
 
+    [Fact]
+    public void PreviewPanel_IsFocusableForNativeTextSelection()
+    {
+        var focusable = RunOnSta(() =>
+        {
+            var panel = new AnswerPreviewPanel();
+            return panel.Focusable && panel.IsTabStop;
+        });
+
+        Assert.True(focusable);
+    }
+
     private static T RunOnSta<T>(Func<T> callback)
     {
         T? result = default;
