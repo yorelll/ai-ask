@@ -241,6 +241,13 @@ public sealed class NativeSkillSettingsPanel : UserControl
         });
     }
 
+    /// <summary>
+    /// Explicitly replaces the theme's DataGridCell template. Setter-only
+    /// overrides are not sufficient because the host Flow WPF theme can add
+    /// IsSelected/current-cell triggers that paint one cell darker than the
+    /// selected row. This template deliberately has no such triggers: cells
+    /// stay transparent and the DataGridRow owns all selection visuals.
+    /// </summary>
     private static Style CreateCellStyle()
     {
         var style = new Style(typeof(DataGridCell));
@@ -250,7 +257,28 @@ public sealed class NativeSkillSettingsPanel : UserControl
         style.Setters.Add(new Setter(FocusVisualStyleProperty, null));
         style.Setters.Add(new Setter(IsTabStopProperty, false));
         style.Setters.Add(new Setter(PaddingProperty, new Thickness(12, 0, 12, 0)));
+        style.Setters.Add(new Setter(TemplateProperty, CreateCellTemplate()));
         return style;
+    }
+
+    private static ControlTemplate CreateCellTemplate()
+    {
+        const string markup = """
+            <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                             TargetType="{x:Type DataGridCell}">
+              <Border Background="Transparent" BorderBrush="Transparent" BorderThickness="0"
+                      Padding="{TemplateBinding Padding}" SnapsToDevicePixels="True">
+                <ContentPresenter Content="{TemplateBinding Content}"
+                                  ContentTemplate="{TemplateBinding ContentTemplate}"
+                                  ContentTemplateSelector="{TemplateBinding ContentTemplateSelector}"
+                                  ContentStringFormat="{TemplateBinding ContentStringFormat}"
+                                  VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                  HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" />
+              </Border>
+            </ControlTemplate>
+            """;
+        return (ControlTemplate)XamlReader.Parse(markup);
     }
 
     private static Style CreateRowStyle()

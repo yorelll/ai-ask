@@ -17,6 +17,7 @@ public sealed class NativeSkillSettingsPanelTests : IDisposable
         {
             var panel = CreatePanel();
             var grid = panel.SkillsGrid;
+            var cellStyle = Assert.IsType<System.Windows.Style>(grid.Resources[typeof(DataGridCell)]);
             return (
                 grid.SelectionUnit,
                 grid.SelectionMode,
@@ -25,7 +26,9 @@ public sealed class NativeSkillSettingsPanelTests : IDisposable
                 grid.CanUserAddRows,
                 grid.CanUserDeleteRows,
                 grid.IsReadOnly,
-                grid.Columns.Count);
+                grid.Columns.Count,
+                cellStyle.Setters.OfType<System.Windows.Setter>().Any(setter => setter.Property == Control.TemplateProperty),
+                cellStyle.Setters.OfType<System.Windows.Setter>().Any(setter => setter.Property == Control.FocusVisualStyleProperty && setter.Value is null));
         });
 
         Assert.Equal(DataGridSelectionUnit.FullRow, details.Item1);
@@ -36,6 +39,8 @@ public sealed class NativeSkillSettingsPanelTests : IDisposable
         Assert.False(details.Item6);
         Assert.True(details.Item7);
         Assert.Equal(4, details.Item8);
+        Assert.True(details.Item9);
+        Assert.True(details.Item10);
     }
 
     [Fact]
