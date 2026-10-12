@@ -229,19 +229,6 @@ public sealed class MainTests
         Assert.Equal("Copy full answer", results[0].Title);
     }
 
-    private static Query CreateAiQuery(string search)
-    {
-        var query = new Query
-        {
-            ActionKeyword = "ai",
-            SearchTerms = search.Split(Query.TermSeparator, StringSplitOptions.RemoveEmptyEntries)
-        };
-        SetQueryProperty(query, nameof(Query.Search), search);
-        SetQueryProperty(query, nameof(Query.OriginalQuery), $"ai {search}");
-        SetQueryProperty(query, nameof(Query.TrimmedQuery), $"ai {search}");
-        return query;
-    }
-
     private static T GetPrivateField<T>(Main plugin, string name)
     {
         var field = typeof(Main).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic);
