@@ -53,6 +53,9 @@ public sealed class Main : IAsyncPlugin, IContextMenu, IResultUpdated, ISettingP
         _session = session ?? throw new ArgumentNullException(nameof(session));
         _chatClientFactory = chatClientFactory ?? throw new ArgumentNullException(nameof(chatClientFactory));
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
+        // Create the preview factory eagerly so answer results are previewable
+        // in normal runtime and unit tests before Flow InitAsync is invoked.
+        _previewFactory = new AnswerPreviewPanelFactory();
         _session.Changed += OnSessionChanged;
     }
 
