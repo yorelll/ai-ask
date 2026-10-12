@@ -228,7 +228,9 @@ public sealed class MainTests
 
         Assert.Equal("Answer ready", results[0].Title);
         Assert.NotNull(results[0].PreviewPanel);
-        Assert.Equal(PreviewVisibility.Always, results[0].PreviewVisibility);
+        // Flow.Launcher.Plugin 5.3.2 does not expose PreviewVisibility.
+        // PreviewPanel + a non-hiding result action are the supported contract.
+        Assert.False(results[0].Action(new ActionContext()));
         Assert.Equal("Copy full answer", results[1].Title);
     }
 
