@@ -7,7 +7,7 @@ The release workflow creates an **AI Ask** plugin archive for Flow Launcher.
 The plugin manifest defines the user-visible version, for example:
 
 ```json
-"Version": "1.0.0"
+"Version": "0.0.1"
 ```
 
 ## Independent release tracks
@@ -26,8 +26,8 @@ For example, a Python `v0.0.2` and a managed `csharp-v0.0.1` may coexist.
 The user-visible GitHub release and archive are named simply:
 
 ```text
-AI Ask v1.0.0
-AIAsk-1.0.0.zip
+AI Ask v0.0.1
+AIAsk-0.0.1.zip
 ```
 
 ## Publish flow
